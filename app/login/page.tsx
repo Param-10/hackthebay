@@ -1,12 +1,34 @@
 "use client"
 
+import { useEffect } from "react"
+import { useRouter } from "next/navigation"
 import Image from "next/image"
 import Link from "next/link"
-import { signIn } from "next-auth/react"
+import { signIn, useSession } from "next-auth/react"
 import { Github } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
 export default function LoginPage() {
+  const { data: session, status } = useSession()
+  const router = useRouter()
+
+  useEffect(() => {
+    if (status === "authenticated") {
+      router.push("/dashboard")
+    }
+  }, [status, router])
+
+  if (status === "loading" || session) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <div className="flex items-center gap-3 text-muted-foreground">
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          <span className="text-sm">Loading...</span>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="relative flex min-h-screen items-center justify-center bg-background">
       {/* Grid background */}
@@ -45,7 +67,7 @@ export default function LoginPage() {
 
           {/* Sign in button */}
           <Button
-            onClick={() => signIn("github", { callbackUrl: "/" })}
+            onClick={() => signIn("github", { callbackUrl: "/dashboard" })}
             className="mt-8 flex h-11 w-full items-center justify-center gap-2.5 text-sm"
           >
             <Github className="h-5 w-5" />

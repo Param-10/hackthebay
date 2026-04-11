@@ -71,12 +71,16 @@ async def parse_pr_event(request: Request) -> dict | None:
     if action not in ("opened", "synchronize", "reopened"):
         return None
 
-    pr = body["pull_request"]
-    return {
-        "repo_full_name": body["repository"]["full_name"],
-        "pr_number": pr["number"],
-        "head_sha": pr["head"]["sha"],
-        "base_sha": pr["base"]["sha"],
-        "installation_id": body["installation"]["id"],
-        "pr_url": pr["html_url"],
-    }
+    try:
+        pr = body["pull_request"]
+        return {
+            "repo_full_name": body["repository"]["full_name"],
+            "pr_number": pr["number"],
+            "head_sha": pr["head"]["sha"],
+            "base_sha": pr["base"]["sha"],
+            "installation_id": body["installation"]["id"],
+            "pr_url": pr["html_url"],
+        }
+    except (KeyError, TypeError) as exc:
+        logger.warning("Malformed PR webhook payload, ignoring: %s", exc)
+        return None

@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, Enum as SAEnum, JSON, ForeignKey,
+    Column, Integer, String, Text, DateTime, Enum as SAEnum, JSON, ForeignKey, Boolean,
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -54,6 +54,8 @@ class ScanFinding(Base):
     raw_evidence = Column(Text, nullable=False)
     proposed_patch = Column(Text, nullable=True)
     patch_verified = Column(String, nullable=True)   # "valid" | "invalid" | "skipped"
+    fix_applied = Column(Boolean, default=False, nullable=False, server_default="0")
+    fix_commit_sha = Column(String, nullable=True)
     agent_data = Column(JSON, nullable=True)          # full agent output blob
 
     scan_run = relationship("ScanRun", back_populates="findings")

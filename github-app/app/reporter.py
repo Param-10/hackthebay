@@ -37,11 +37,13 @@ def post_pr_review(
     reasoning: ReasoningOutput,
     verification: VerificationOutput,
 ) -> None:
-    """Post a PR review with inline comments and a summary body."""
+    """Post a PR review with inline comments and a summary body.
+    Falls back to summary-only if inline comments reference stale lines."""
     comments = _build_inline_comments(reasoning, verification)
     body = _build_summary_body(reasoning, verification)
+    headers = _auth_headers(token)
+    url = f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}/reviews"
 
-    # Single review with all inline comments
     payload = {
         "commit_id": head_sha,
         "body": body,
@@ -49,16 +51,42 @@ def post_pr_review(
         "comments": comments,
     }
 
-    resp = httpx.post(
-        f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}/reviews",
-        json=payload,
-        headers=_auth_headers(token),
-        timeout=30,
-    )
-    if resp.status_code not in (200, 201):
-        logger.error("Failed to post PR review: %s %s", resp.status_code, resp.text[:300])
-    else:
+    try:
+        resp = httpx.post(url, json=payload, headers=headers, timeout=30)
+    except httpx.HTTPError as exc:
+        logger.error("Network error posting PR review for %s PR#%s: %s", repo, pr_number, exc)
+        raise RuntimeError(f"Failed to post PR review: {exc}") from exc
+
+    if resp.status_code in (200, 201):
         logger.info("Posted PR review for %s PR#%s", repo, pr_number)
+        return
+
+    if resp.status_code == 422 and comments:
+        logger.warning(
+            "Inline comments rejected (likely stale line numbers) for %s PR#%s, retrying without inline comments",
+            repo, pr_number,
+        )
+        fallback_body = body + _build_all_findings_as_body(reasoning, verification)
+        fallback_payload = {
+            "commit_id": head_sha,
+            "body": fallback_body,
+            "event": _review_event(reasoning.overall_risk),
+            "comments": [],
+        }
+        try:
+            resp2 = httpx.post(url, json=fallback_payload, headers=headers, timeout=30)
+        except httpx.HTTPError as exc:
+            logger.error("Network error on fallback PR review for %s PR#%s: %s", repo, pr_number, exc)
+            raise RuntimeError(f"Failed to post PR review (fallback): {exc}") from exc
+
+        if resp2.status_code in (200, 201):
+            logger.info("Posted PR review (summary-only fallback) for %s PR#%s", repo, pr_number)
+            return
+        logger.error("Fallback PR review also failed: %s %s", resp2.status_code, resp2.text[:300])
+        raise RuntimeError(f"GitHub rejected PR review: HTTP {resp2.status_code}")
+
+    logger.error("Failed to post PR review: %s %s", resp.status_code, resp.text[:300])
+    raise RuntimeError(f"GitHub rejected PR review: HTTP {resp.status_code}")
 
 
 def post_commit_status(
@@ -75,16 +103,21 @@ def post_commit_status(
         "description": description,
         "context": "iac-scanner/security",
     }
-    resp = httpx.post(
-        f"{GITHUB_API}/repos/{repo}/statuses/{head_sha}",
-        json=payload,
-        headers=_auth_headers(token),
-        timeout=15,
-    )
+    try:
+        resp = httpx.post(
+            f"{GITHUB_API}/repos/{repo}/statuses/{head_sha}",
+            json=payload,
+            headers=_auth_headers(token),
+            timeout=15,
+        )
+    except httpx.HTTPError as exc:
+        logger.error("Network error posting commit status for %s: %s", head_sha[:8], exc)
+        raise RuntimeError(f"Failed to post commit status: {exc}") from exc
+
     if resp.status_code not in (200, 201):
         logger.error("Failed to post commit status: %s", resp.status_code)
-    else:
-        logger.info("Posted commit status '%s' for %s", state, head_sha[:8])
+        raise RuntimeError(f"GitHub rejected commit status: HTTP {resp.status_code}")
+    logger.info("Posted commit status '%s' for %s", state, head_sha[:8])
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -119,6 +152,22 @@ def _build_inline_comments(
         })
 
     return comments
+
+
+def _build_all_findings_as_body(
+    reasoning: ReasoningOutput,
+    verification: VerificationOutput,
+) -> str:
+    """Format all findings into the review body (used when inline comments fail)."""
+    verdict_map = {v.rule: v for v in verification.verdicts}
+    sections = ["\n---\n### Detailed Findings\n"]
+    for f in reasoning.findings:
+        verdict = verdict_map.get(f.rule)
+        location = f"`{f.file}`" + (f" L{f.line}" if f.line else "")
+        sections.append(f"#### {location}")
+        sections.append(_format_finding_comment(f, verdict))
+        sections.append("")
+    return "\n".join(sections)
 
 
 def _build_no_line_findings_section(

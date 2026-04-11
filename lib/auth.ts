@@ -12,9 +12,16 @@ export const authOptions: AuthOptions = {
     signIn: "/login",
   },
   callbacks: {
+    async jwt({ token, profile }) {
+      if (profile) {
+        token.login = (profile as { login?: string }).login
+      }
+      return token
+    },
     async session({ session, token }) {
       if (session.user) {
         session.user.id = token.sub as string
+        ;(session.user as { login?: string }).login = token.login as string
       }
       return session
     },

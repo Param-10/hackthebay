@@ -119,11 +119,7 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
 
     logger.info("Agent 2: %d verdicts, all_clear=%s", len(all_verdicts), all_clear)
 
-    # ── Step 6: Post to GitHub ────────────────────────────────────────────────
-    post_pr_review(repo, pr_number, head_sha, token, reasoning, combined_verification)
-    post_commit_status(repo, head_sha, token, reasoning.overall_risk, reasoning.summary)
-
-    # ── Step 7: Persist ───────────────────────────────────────────────────────
+    # ── Step 6: Persist findings (before GitHub posting, so data is never lost)
     for rf in reasoning.findings:
         verdict = verdict_map.get(rf.rule)
         patch_verified = None
@@ -148,3 +144,10 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
     scan_run.summary = reasoning.summary
     db.commit()
     logger.info("Scan complete for %s PR#%s – verdict=%s", repo, pr_number, scan_run.verdict)
+
+    # ── Step 7: Post to GitHub (best-effort, findings already saved) ─────────
+    try:
+        post_pr_review(repo, pr_number, head_sha, token, reasoning, combined_verification)
+        post_commit_status(repo, head_sha, token, reasoning.overall_risk, reasoning.summary)
+    except Exception:
+        logger.exception("Failed to post results to GitHub for %s PR#%s (findings saved)", repo, pr_number)
