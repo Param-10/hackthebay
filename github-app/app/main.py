@@ -324,23 +324,26 @@ def _apply_patch(original: str, patch: str, hint_line: int | None = None) -> str
     if not patch or not patch.strip():
         return None
 
+    patch_lines = patch.splitlines()
+    has_diff_headers = any(
+        l.startswith("---") or l.startswith("+++") or l.startswith("@@")
+        for l in patch_lines
+    )
+
     removals: list[str] = []
     additions: list[str] = []
-    has_diff_markers = False
 
-    for raw_line in patch.splitlines():
-        if raw_line.startswith("---") or raw_line.startswith("+++") or raw_line.startswith("@@"):
-            has_diff_markers = True
-            continue
-        if raw_line.startswith("-"):
-            removals.append(raw_line[1:].rstrip("\n"))
-            has_diff_markers = True
-        elif raw_line.startswith("+"):
-            additions.append(raw_line[1:].rstrip("\n"))
-            has_diff_markers = True
+    if has_diff_headers:
+        for raw_line in patch_lines:
+            if raw_line.startswith("---") or raw_line.startswith("+++") or raw_line.startswith("@@"):
+                continue
+            if raw_line.startswith("-"):
+                removals.append(raw_line[1:].rstrip("\n"))
+            elif raw_line.startswith("+"):
+                additions.append(raw_line[1:].rstrip("\n"))
 
-    if has_diff_markers and (removals or additions):
-        return _apply_unified_diff(original, removals, additions)
+        if removals or additions:
+            return _apply_unified_diff(original, removals, additions)
 
     return _apply_replacement_block(original, patch, hint_line)
 
@@ -370,6 +373,7 @@ def _apply_replacement_block(original: str, patch: str, hint_line: int | None) -
     """
     Apply a plain replacement block by finding the matching code section
     in the original file near the hinted line number.
+    Falls back to hint_line-based replacement if content matching fails.
     """
     original_lines = original.splitlines()
     patch_lines = patch.strip().splitlines()
@@ -378,7 +382,6 @@ def _apply_replacement_block(original: str, patch: str, hint_line: int | None) -
         return None
 
     first_patch = patch_lines[0].strip()
-    last_patch = patch_lines[-1].strip()
 
     best_start = -1
     best_end = -1
@@ -409,7 +412,7 @@ def _apply_replacement_block(original: str, patch: str, hint_line: int | None) -
     if best_start == -1:
         for i in range(len(original_lines)):
             stripped = original_lines[i].strip()
-            if any(tok in stripped for tok in first_patch.split()[:3]):
+            if any(tok in stripped for tok in first_patch.split()[:3] if len(tok) > 2):
                 brace_depth = 0
                 block_end = i
                 for j in range(i, len(original_lines)):
@@ -425,6 +428,19 @@ def _apply_replacement_block(original: str, patch: str, hint_line: int | None) -
                     best_start = i
                     best_end = block_end
                     best_distance = distance
+
+    if best_start == -1 and hint_line and hint_line > 0:
+        idx = hint_line - 1
+        if idx < len(original_lines):
+            indent = len(original_lines[idx]) - len(original_lines[idx].lstrip())
+            end = idx
+            for j in range(idx, len(original_lines)):
+                line = original_lines[j]
+                if j > idx and line.strip() and (len(line) - len(line.lstrip())) <= indent:
+                    break
+                end = j
+            best_start = idx
+            best_end = end
 
     if best_start == -1:
         return None
