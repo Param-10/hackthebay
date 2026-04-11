@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: production-api
+  namespace: default
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      hostNetwork: true
+      containers:
+        - name: api
+          image: mycompany/api:latest
+          securityContext:
+            privileged: true
+            runAsRoot: true
+          ports:
+            - containerPort: 8080
+            - containerPort: 22
+          env:
+            - name: DB_PASSWORD
+              value: "hardcoded-secret-123"

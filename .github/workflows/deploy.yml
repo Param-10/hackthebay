@@ -1,0 +1,18 @@
+name: Deploy on PR
+on: [pull_request]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Log PR info
+        run: |
+          echo "Deploying PR: ${{ github.event.pull_request.title }}"
+          echo "Author: ${{ github.event.pull_request.head.ref }}"
+
+      - name: Build and Push
+        run: |
+          docker build -t myapp:${{ github.sha }} .
+          docker push myapp:${{ github.sha }}
