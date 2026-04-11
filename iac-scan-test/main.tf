@@ -19,6 +19,6 @@ resource "aws_s3_bucket" "public_data" {
 resource "aws_db_instance" "default" {
   engine         = "mysql"
   instance_class = "db.t3.micro"
-  password       = "admin123"
-  publicly_accessible = true
+  password       = var.db_password
+  publicly_accessible = false
 }
