@@ -13,7 +13,10 @@ variable "db_password" {
 
 resource "aws_s3_bucket" "public_data" {
   bucket = "my-public-bucket"
-  acl    = "public-read"
+}
+resource "aws_s3_bucket_acl_v2" "example" {
+  bucket = aws_s3_bucket.public_data.id
+  acl    = "private"
 }
 
 resource "aws_db_instance" "default" {
