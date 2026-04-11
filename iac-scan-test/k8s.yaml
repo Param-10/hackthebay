@@ -5,8 +5,11 @@ metadata:
 spec:
   template:
     spec:
+      hostNetwork: true
       containers:
       - name: api
         image: myapp:latest
         securityContext:
           privileged: true
+        ports:
+        - containerPort: 22
