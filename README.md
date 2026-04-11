@@ -6,7 +6,7 @@ Polaris is an autonomous security agent that connects to GitHub as an App, scans
 
 ---
 
-## The Problem
+## The Problems
 
 Infrastructure code gets reviewed for functionality but almost never for security. A developer pushes a Terraform file with an open S3 bucket, a Dockerfile with hardcoded secrets, or a Kubernetes manifest running privileged containers — it passes code review and ships to production. Nobody catches it until an audit or a breach.
 
@@ -21,7 +21,7 @@ Polaris acts like that senior SRE, automatically. Install the GitHub App, open a
 3. **Reasons** with Gemini to map findings to CIS/SOC2 frameworks and generate exact code fixes
 4. **Reports** inline PR comments on the exact line of vulnerable code, with suggested fixes ready to commit
 
-The entire pipeline completes in seconds with zero manual effort from the developer.
+The entire pipeline completes in seconds with zero manual effort from the developers.
 
 ## Key Features
 
