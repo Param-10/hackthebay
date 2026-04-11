@@ -18,8 +18,8 @@ resource "aws_db_instance" "production" {
   engine              = "postgres"
   instance_class      = "db.t3.medium"
   password            = var.db_password
-  publicly_accessible = true
-  storage_encrypted   = false
+  publicly_accessible = false
+  storage_encrypted   = true
 }
 
 resource "aws_s3_bucket" "data" {
