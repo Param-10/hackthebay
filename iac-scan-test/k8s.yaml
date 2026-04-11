@@ -9,7 +9,9 @@ spec:
       containers:
       - name: api
         image: myapp:latest
-        securityContext:
-          privileged: true
+securityContext:
+          privileged: false
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
         ports:
         - containerPort: 22
