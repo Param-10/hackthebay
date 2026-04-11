@@ -49,6 +49,10 @@ PR Opened → GitHub Webhook → FastAPI Backend → Deterministic Scan
 6. Results are posted as an inline PR review on GitHub and stored in the dashboard
 7. The developer can approve fixes with one click — Polaris commits directly to the PR branch
 
+## Demo
+
+![Polaris Dashboard Demo](public/demo-dashboard.webp)
+
 ## Screenshots
 
 ### Landing Page
