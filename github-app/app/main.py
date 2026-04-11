@@ -1,8 +1,11 @@
 import logging
 import base64
+import os
 import re
+import time
+from collections import defaultdict
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, BackgroundTasks, Request, HTTPException
+from fastapi import FastAPI, BackgroundTasks, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
 
 from app.database import init_db
@@ -13,6 +16,31 @@ from app.scanner.fetcher import get_installation_token, _auth_headers, GITHUB_AP
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+API_SECRET = os.environ.get("API_SECRET", "")
+
+# ── Simple in-memory rate limiter ─────────────────────────────────────────────
+_rate_buckets: dict[str, list[float]] = defaultdict(list)
+RATE_LIMIT = 60
+RATE_WINDOW = 60
+
+
+def _check_rate_limit(key: str) -> None:
+    now = time.time()
+    bucket = _rate_buckets[key]
+    _rate_buckets[key] = [t for t in bucket if now - t < RATE_WINDOW]
+    if len(_rate_buckets[key]) >= RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    _rate_buckets[key].append(now)
+
+
+async def verify_api_auth(request: Request) -> None:
+    """Verify requests come from the trusted frontend proxy."""
+    if not API_SECRET:
+        return
+    token = request.headers.get("X-API-Secret", "")
+    if token != API_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -21,7 +49,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="IaC Security Scanner", lifespan=lifespan)
+app = FastAPI(title="IaC Security Scanner", lifespan=lifespan, docs_url=None, redoc_url=None)
 
 
 @app.post("/webhook")
@@ -49,15 +77,19 @@ async def health():
 
 
 @app.get("/scans")
-async def list_all_scans(owner: str | None = None, limit: int = 50):
+async def list_all_scans(request: Request, owner: str | None = None, limit: int = 50, _auth=Depends(verify_api_auth)):
     """List recent scan runs, optionally filtered by repo owner."""
+    _check_rate_limit(request.client.host if request.client else "unknown")
+    if limit < 1 or limit > 200:
+        limit = 50
     from app.database import SessionLocal
     from app.models import ScanRun
     db = SessionLocal()
     try:
         query = db.query(ScanRun)
         if owner:
-            query = query.filter(ScanRun.repo_full_name.startswith(f"{owner}/"))
+            safe_owner = re.sub(r"[^a-zA-Z0-9_\-.]", "", owner)
+            query = query.filter(ScanRun.repo_full_name.startswith(f"{safe_owner}/"))
         runs = query.order_by(ScanRun.created_at.desc()).limit(limit).all()
         return [
             {
@@ -77,8 +109,11 @@ async def list_all_scans(owner: str | None = None, limit: int = 50):
 
 
 @app.get("/scans/{scan_id}/findings")
-async def get_findings(scan_id: int):
+async def get_findings(request: Request, scan_id: int, _auth=Depends(verify_api_auth)):
     """Return all findings for a scan run."""
+    _check_rate_limit(request.client.host if request.client else "unknown")
+    if scan_id < 1:
+        raise HTTPException(status_code=400, detail="Invalid scan ID")
     from app.database import SessionLocal
     from app.models import ScanRun, ScanFinding
     db = SessionLocal()
@@ -108,8 +143,11 @@ async def get_findings(scan_id: int):
 
 
 @app.get("/scans/{scan_id}/meta")
-async def get_scan_meta(scan_id: int):
+async def get_scan_meta(request: Request, scan_id: int, _auth=Depends(verify_api_auth)):
     """Return scan run metadata (repo, PR, summary, etc.)."""
+    _check_rate_limit(request.client.host if request.client else "unknown")
+    if scan_id < 1:
+        raise HTTPException(status_code=400, detail="Invalid scan ID")
     from app.database import SessionLocal
     from app.models import ScanRun
     db = SessionLocal()
@@ -132,26 +170,33 @@ async def get_scan_meta(scan_id: int):
 
 
 @app.post("/scans/{scan_id}/findings/{finding_id}/apply")
-async def apply_fix(scan_id: int, finding_id: int):
+async def apply_fix(request: Request, scan_id: int, finding_id: int, _auth=Depends(verify_api_auth)):
     """
     One-Click Auto-Fix: apply the proposed patch for a finding
     by committing the corrected file to the PR branch via GitHub API.
     """
+    _check_rate_limit(request.client.host if request.client else "unknown")
+    if scan_id < 1 or finding_id < 1:
+        raise HTTPException(status_code=400, detail="Invalid ID")
+
     import httpx
+    from sqlalchemy.orm import Session
     from app.database import SessionLocal
     from app.models import ScanRun, ScanFinding
 
-    db = SessionLocal()
+    db: Session = SessionLocal()
     locked = False
     try:
         run = db.query(ScanRun).filter(ScanRun.id == scan_id).first()
         if not run:
             raise HTTPException(status_code=404, detail="Scan not found")
 
-        finding = db.query(ScanFinding).filter(
-            ScanFinding.id == finding_id,
-            ScanFinding.scan_run_id == scan_id,
-        ).first()
+        finding = (
+            db.query(ScanFinding)
+            .filter(ScanFinding.id == finding_id, ScanFinding.scan_run_id == scan_id)
+            .with_for_update()
+            .first()
+        )
         if not finding:
             raise HTTPException(status_code=404, detail="Finding not found")
         if not finding.proposed_patch:
@@ -164,14 +209,17 @@ async def apply_fix(scan_id: int, finding_id: int):
                 "rule": finding.rule,
             }
 
+        if ".." in finding.file or finding.file.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+
         finding.fix_applied = True
         db.commit()
         locked = True
 
         try:
             token = get_installation_token(run.installation_id)
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Could not authenticate with GitHub: {exc}")
+        except Exception:
+            raise HTTPException(status_code=502, detail="Could not authenticate with GitHub")
 
         headers = _auth_headers(token)
 
@@ -182,8 +230,8 @@ async def apply_fix(scan_id: int, finding_id: int):
                 timeout=15,
             )
             pr_resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Could not fetch PR info: {exc}")
+        except httpx.HTTPError:
+            raise HTTPException(status_code=502, detail="Could not fetch PR info")
         branch = pr_resp.json()["head"]["ref"]
 
         try:
@@ -193,17 +241,21 @@ async def apply_fix(scan_id: int, finding_id: int):
                 headers=headers,
                 timeout=15,
             )
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Could not fetch file content: {exc}")
+        except httpx.HTTPError:
+            raise HTTPException(status_code=502, detail="Could not fetch file content")
 
         if file_resp.status_code == 404:
-            raise HTTPException(status_code=404, detail=f"File {finding.file} not found on branch {branch}")
+            raise HTTPException(status_code=404, detail="File not found on branch")
         if file_resp.status_code >= 400:
-            raise HTTPException(status_code=502, detail=f"GitHub returned {file_resp.status_code} fetching file")
+            raise HTTPException(status_code=502, detail="GitHub error fetching file")
 
         file_data = file_resp.json()
         file_sha = file_data["sha"]
-        original = base64.b64decode(file_data["content"]).decode("utf-8")
+
+        try:
+            original = base64.b64decode(file_data["content"]).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(status_code=422, detail="Could not decode file content")
 
         patched = _apply_patch(original, finding.proposed_patch, finding.line)
         if patched is None:
@@ -221,8 +273,8 @@ async def apply_fix(scan_id: int, finding_id: int):
                 headers=headers,
                 timeout=20,
             )
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Could not commit fix to GitHub: {exc}")
+        except httpx.HTTPError:
+            raise HTTPException(status_code=502, detail="Could not commit fix to GitHub")
 
         if commit_resp.status_code not in (200, 201):
             logger.error("Failed to commit fix: %s %s", commit_resp.status_code, commit_resp.text[:300])
@@ -251,13 +303,13 @@ async def apply_fix(scan_id: int, finding_id: int):
             finding.fix_commit_sha = None
             db.commit()
         raise
-    except Exception as exc:
+    except Exception:
         if locked:
             finding.fix_applied = False
             finding.fix_commit_sha = None
             db.commit()
         logger.exception("Unexpected error applying fix for finding #%s", finding_id)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         db.close()
 
@@ -382,7 +434,7 @@ def _apply_replacement_block(original: str, patch: str, hint_line: int | None) -
 
 
 @app.get("/scans/{repo_owner}/{repo_name}")
-async def list_scans(repo_owner: str, repo_name: str, limit: int = 20):
+async def list_scans(request: Request, repo_owner: str, repo_name: str, limit: int = 20, _auth=Depends(verify_api_auth)):
     """List recent scan runs for a repo (dashboard endpoint)."""
     from app.database import SessionLocal
     from app.models import ScanRun

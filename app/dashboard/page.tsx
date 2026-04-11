@@ -63,7 +63,11 @@ export default function DashboardPage() {
     async function fetchScans() {
       if (!session?.user) return
       const login = (session.user as { login?: string }).login
-      if (!login) return
+      if (!login) {
+        setLoading(false)
+        setError("Session missing GitHub login. Please sign out and sign back in.")
+        return
+      }
       try {
         const res = await fetch(`/api/scans?owner=${encodeURIComponent(login)}`)
         if (res.ok) {
