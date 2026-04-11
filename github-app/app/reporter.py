@@ -101,25 +101,42 @@ def _build_inline_comments(
     reasoning: ReasoningOutput,
     verification: VerificationOutput,
 ) -> list[dict]:
+    """Only return comments that have a valid line number — GitHub rejects the
+    entire review if any comment lacks a line reference."""
     verdict_map = {v.rule: v for v in verification.verdicts}
     comments = []
 
     for f in reasoning.findings:
+        if not f.line:
+            continue   # no-line findings go into the summary body instead
         verdict = verdict_map.get(f.rule)
-        emoji = SEVERITY_EMOJI.get(f.severity, "⚪")
         body = _format_finding_comment(f, verdict)
-
-        comment: dict = {
+        comments.append({
             "path": f.file,
             "body": body,
             "side": "RIGHT",
-        }
-        if f.line:
-            comment["line"] = f.line
-
-        comments.append(comment)
+            "line": f.line,
+        })
 
     return comments
+
+
+def _build_no_line_findings_section(
+    reasoning: ReasoningOutput,
+    verification: VerificationOutput,
+) -> str:
+    """Findings without a line number, formatted for the review summary body."""
+    verdict_map = {v.rule: v for v in verification.verdicts}
+    no_line = [f for f in reasoning.findings if not f.line]
+    if not no_line:
+        return ""
+
+    lines = ["\n---\n### File-level findings\n"]
+    for f in no_line:
+        verdict = verdict_map.get(f.rule)
+        lines.append(_format_finding_comment(f, verdict))
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _format_finding_comment(
@@ -186,6 +203,10 @@ def _build_summary_body(
 
     if not verification.all_clear:
         lines += ["", "> ⚠️ Some proposed patches require revision before applying."]
+
+    no_line_section = _build_no_line_findings_section(reasoning, verification)
+    if no_line_section:
+        lines.append(no_line_section)
 
     lines += ["", "---", "_Powered by IaC Security Scanner + Gemini_"]
     return "\n".join(lines)
