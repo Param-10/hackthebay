@@ -4,8 +4,8 @@ metadata:
   name: api
 spec:
   template:
-    spec:
-      hostNetwork: true
+spec:
+      hostNetwork: false
       containers:
       - name: api
         image: myapp:latest
