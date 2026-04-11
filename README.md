@@ -158,5 +158,3 @@ Set your Smee URL as the webhook URL in your GitHub App settings.
 This project is **locally hosted** and was built for Hack the Bay 2026.
 
 ---
-
-Built with Gemini, Next.js, FastAPI, and too much coffee at Hack the Bay 2026.
