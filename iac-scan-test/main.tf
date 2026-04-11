@@ -7,7 +7,8 @@ resource "aws_security_group_rule" "allow_all" {
 }
 
 variable "db_password" {
-  default = "hardcoded_secret_123"
+  type      = string
+  sensitive = true
 }
 # trigger rescan
 
