@@ -2,11 +2,11 @@ resource "aws_security_group" "web" {
   name        = "web-sg"
   description = "Allow all inbound traffic"
 
-  ingress {
-    from_port   = 0
-    to_port     = 65535
+ingress {
+    from_port   = 443
+    to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.0.0.0/8"] # Or specific trusted CIDRs
   }
 }
 
