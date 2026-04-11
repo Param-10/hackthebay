@@ -1,4 +1,5 @@
 FROM ubuntu:latest
-RUN curl https://example.com/install.sh | bash
-EXPOSE 22
+RUN curl -fsSL https://example.com/install.sh -o install.sh \
+    && echo "<expected_hash>  install.sh" | sha256sum -c - \
+    && sh install.sh
 # rescan with new key
