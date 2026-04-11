@@ -26,8 +26,11 @@ securityContext:
             - containerPort: 8080
             - containerPort: 22
 env:
-            - name: DB_PASSWORD
-              valueFrom:
+- name: DB_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: db-secrets
+      key: password
                 secretKeyRef:
                   name: db-secrets
                   key: password
