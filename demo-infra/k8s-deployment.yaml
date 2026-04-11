@@ -17,8 +17,10 @@ spec:
       containers:
         - name: api
           image: mycompany/api:latest
-          securityContext:
-            privileged: true
+securityContext:
+  privileged: false
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
             runAsRoot: true
           ports:
             - containerPort: 8080
