@@ -25,6 +25,10 @@ securityContext:
           ports:
             - containerPort: 8080
             - containerPort: 22
-          env:
+env:
             - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: password
               value: "hardcoded-secret-123"
