@@ -53,10 +53,28 @@ def run_scan(job: dict) -> None:
 
     try:
         _execute(job, scan_run, db)
-    except Exception:
+    except Exception as exc:
         logger.exception("Scan failed for %s PR#%s", repo, pr_number)
         scan_run.status = ScanStatus.failed
+        scan_run.verdict = FinalVerdict.fail
+        reason = str(exc).strip() or "Scan failed due to an internal error."
+        scan_run.summary = reason[:500]
         db.commit()
+        try:
+            token = get_installation_token(install_id)
+            post_commit_status(
+                repo,
+                head_sha,
+                token,
+                "critical",
+                f"Scan failed: {scan_run.summary}",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to post scan failure status for %s PR#%s",
+                repo,
+                pr_number,
+            )
     finally:
         db.close()
 
