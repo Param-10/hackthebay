@@ -24,7 +24,7 @@ jobs:
             exit 0
           fi
 
-          BUILD_CONTEXT="$(dirname "${DOCKERFILE_PATH}")"
+          BUILD_CONTEXT="."
           echo "Using Dockerfile: ${DOCKERFILE_PATH}"
           echo "Using build context: ${BUILD_CONTEXT}"
 
