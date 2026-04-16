@@ -53,7 +53,7 @@ class ScanFinding(Base):
     explanation = Column(Text, nullable=False)
     raw_evidence = Column(Text, nullable=False)
     proposed_patch = Column(Text, nullable=True)
-    patch_verified = Column(String, nullable=True)   # "valid" | "invalid" | "skipped"
+    patch_verified = Column(String, nullable=True)   # "approve" | "revise" | "reject"
     fix_applied = Column(Boolean, default=False, nullable=False, server_default="0")
     fix_commit_sha = Column(String, nullable=True)
     agent_data = Column(JSON, nullable=True)          # full agent output blob

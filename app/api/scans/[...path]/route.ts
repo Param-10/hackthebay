@@ -11,11 +11,55 @@ function backendHeaders(): Record<string, string> {
   return h
 }
 
+function extractOwner(repoFullName?: string): string | null {
+  if (!repoFullName || !repoFullName.includes("/")) return null
+  return repoFullName.split("/", 1)[0] ?? null
+}
+
+async function authorizeScanAccess(scanId: string, login: string): Promise<NextResponse | null> {
+  try {
+    const metaRes = await fetch(`${BACKEND_URL}/scans/${scanId}/meta`, {
+      headers: backendHeaders(),
+      cache: "no-store",
+    })
+
+    if (metaRes.status === 404) {
+      return NextResponse.json({ error: "Scan not found" }, { status: 404 })
+    }
+    if (!metaRes.ok) {
+      return NextResponse.json({ error: "Backend unavailable" }, { status: 502 })
+    }
+
+    const meta = (await metaRes.json()) as { repo_full_name?: string }
+    const scanOwner = extractOwner(meta.repo_full_name)
+    if (!scanOwner || scanOwner.toLowerCase() !== login.toLowerCase()) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    }
+    return null
+  } catch {
+    return NextResponse.json({ error: "Backend unavailable" }, { status: 502 })
+  }
+}
+
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
+  const session = await getServerSession(authOptions)
+  const login = session?.user?.login
+  if (!login) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
   const { path } = await params
+  const scanId = path[0]
+  if (!scanId || !/^\d+$/.test(scanId)) {
+    return NextResponse.json({ error: "Invalid scan ID" }, { status: 400 })
+  }
+
+  const accessError = await authorizeScanAccess(scanId, login)
+  if (accessError) return accessError
+
   const backendPath = path.join("/")
   const url = `${BACKEND_URL}/scans/${backendPath}`
 
@@ -39,11 +83,20 @@ export async function POST(
   { params }: { params: Promise<{ path: string[] }> }
 ) {
   const session = await getServerSession(authOptions)
-  if (!session?.user) {
+  const login = session?.user?.login
+  if (!login) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   const { path } = await params
+  const scanId = path[0]
+  if (!scanId || !/^\d+$/.test(scanId)) {
+    return NextResponse.json({ error: "Invalid scan ID" }, { status: 400 })
+  }
+
+  const accessError = await authorizeScanAccess(scanId, login)
+  if (accessError) return accessError
+
   const backendPath = path.join("/")
   const url = `${BACKEND_URL}/scans/${backendPath}`
 

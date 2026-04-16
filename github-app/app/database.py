@@ -1,12 +1,15 @@
 from sqlalchemy import create_engine
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from app.config import get_settings
 
+database_url = get_settings().database_url
+backend = make_url(database_url).get_backend_name()
+engine_kwargs = {"pool_pre_ping": True}
+if backend == "sqlite":
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
 
-engine = create_engine(
-    get_settings().database_url,
-    connect_args={"check_same_thread": False},  # SQLite only
-)
+engine = create_engine(database_url, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

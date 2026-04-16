@@ -18,8 +18,8 @@ from app.models import ScanRun, ScanFinding, ScanStatus, FinalVerdict
 from app.scanner.fetcher import get_installation_token, list_pr_files, get_file_content
 from app.scanner.filters import is_scannable
 from app.scanner.deterministic import run_deterministic
-from app.agents.reasoning import run_reasoning_agent, ReasoningOutput
-from app.agents.verification import run_verification_agent, VerificationOutput
+from app.agents.reasoning import run_reasoning_agent, ReasoningOutput, ReasonedFinding
+from app.agents.verification import run_verification_agent, VerificationOutput, PatchVerdict
 from app.reporter import post_pr_review, post_commit_status
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,43 @@ OVERALL_TO_VERDICT = {
     "low":      FinalVerdict.pass_,
     "pass":     FinalVerdict.pass_,
 }
+
+
+def _dedupe_findings(findings: list[ReasonedFinding]) -> list[ReasonedFinding]:
+    seen: set[tuple[str, str, int | None]] = set()
+    unique: list[ReasonedFinding] = []
+
+    for finding in findings:
+        key = (finding.file, finding.rule, finding.line)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(finding)
+
+    return unique
+
+
+def _finding_key(file: str, rule: str, line: int | None) -> tuple[str, str, int | None]:
+    return (file.strip(), rule.strip(), line)
+
+
+def _verdict_for_finding(
+    finding: ReasonedFinding,
+    verdict_map: dict[tuple[str, str, int | None], PatchVerdict],
+    all_verdicts: list[PatchVerdict],
+) -> PatchVerdict | None:
+    exact = verdict_map.get(_finding_key(finding.file, finding.rule, finding.line))
+    if exact:
+        return exact
+
+    no_line = verdict_map.get(_finding_key(finding.file, finding.rule, None))
+    if no_line:
+        return no_line
+
+    for verdict in all_verdicts:
+        if verdict.file == finding.file and verdict.rule == finding.rule:
+            return verdict
+    return None
 
 
 def run_scan(job: dict) -> None:
@@ -53,10 +90,28 @@ def run_scan(job: dict) -> None:
 
     try:
         _execute(job, scan_run, db)
-    except Exception:
+    except Exception as exc:
         logger.exception("Scan failed for %s PR#%s", repo, pr_number)
         scan_run.status = ScanStatus.failed
+        scan_run.verdict = FinalVerdict.fail
+        reason = str(exc).strip() or "Scan failed due to an internal error."
+        scan_run.summary = reason[:500]
         db.commit()
+        try:
+            token = get_installation_token(install_id)
+            post_commit_status(
+                repo,
+                head_sha,
+                token,
+                "critical",
+                f"Scan failed: {scan_run.summary}",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to post scan failure status for %s PR#%s",
+                repo,
+                pr_number,
+            )
     finally:
         db.close()
 
@@ -97,7 +152,13 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
     logger.info("Deterministic: %d finding(s)", len(det_result.findings))
 
     # ── Step 4: Agent 1 – Reasoning ───────────────────────────────────────────
-    reasoning: ReasoningOutput = run_reasoning_agent(file_contents, det_result.findings)
+    try:
+        reasoning: ReasoningOutput = run_reasoning_agent(file_contents, det_result.findings)
+    except Exception as exc:
+        raise RuntimeError("Gemini reasoning failed. Please retry this scan.") from exc
+
+    reasoning.findings = _dedupe_findings(reasoning.findings)
+
     logger.info("Agent 1: risk=%s findings=%d", reasoning.overall_risk, len(reasoning.findings))
 
     # ── Step 5: Agent 2 – Verification (per file) ────────────────────────────
@@ -110,10 +171,13 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
     all_verdicts = []
     for fname, findings in by_file.items():
         content = file_contents.get(fname, "")
-        v_out: VerificationOutput = run_verification_agent(content, findings)
-        all_verdicts.extend(v_out.verdicts)
+        try:
+            v_out: VerificationOutput = run_verification_agent(content, findings)
+            all_verdicts.extend(v_out.verdicts)
+        except Exception as exc:
+            raise RuntimeError(f"Gemini verification failed for file: {fname}") from exc
 
-    verdict_map = {v.rule: v for v in all_verdicts}
+    verdict_map = {_finding_key(v.file, v.rule, v.line): v for v in all_verdicts}
     all_clear = all(v.final_recommendation == "approve" for v in all_verdicts) if all_verdicts else True
     combined_verification = VerificationOutput(verdicts=all_verdicts, all_clear=all_clear)
 
@@ -121,7 +185,7 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
 
     # ── Step 6: Persist findings (before GitHub posting, so data is never lost)
     for rf in reasoning.findings:
-        verdict = verdict_map.get(rf.rule)
+        verdict = _verdict_for_finding(rf, verdict_map, all_verdicts)
         patch_verified = None
         if verdict:
             patch_verified = verdict.final_recommendation

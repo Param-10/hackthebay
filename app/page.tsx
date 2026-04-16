@@ -20,7 +20,7 @@ export default function Home() {
 
         <FeatureSection
           title="AI-Generated Fixes"
-          description="Stop manually patching vulnerabilities. Gemini 2.5 Pro reasons through your code, writes the exact corrected IaC, and stages it for one-click commit approval."
+          description="Stop manually patching vulnerabilities. Gemini 3 Flash reasons through your code, writes the exact corrected IaC, and stages it for one-click commit approval."
           image="/feature-2.png"
           reversed
         />

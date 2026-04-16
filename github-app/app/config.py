@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     gemini_api_key: str
     gemini_model: str = "gemini-3-flash-preview"
 
+    # Frontend → backend shared auth secret
+    api_secret: str = ""
+
     # DB
     database_url: str = "sqlite:///./scans.db"
 

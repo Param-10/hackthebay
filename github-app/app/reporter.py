@@ -6,7 +6,7 @@ import logging
 import httpx
 from app.scanner.fetcher import _auth_headers
 from app.agents.reasoning import ReasoningOutput, ReasonedFinding
-from app.agents.verification import VerificationOutput
+from app.agents.verification import VerificationOutput, PatchVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -136,13 +136,13 @@ def _build_inline_comments(
 ) -> list[dict]:
     """Only return comments that have a valid line number — GitHub rejects the
     entire review if any comment lacks a line reference."""
-    verdict_map = {v.rule: v for v in verification.verdicts}
+    verdict_map = {_finding_key(v.file, v.rule, v.line): v for v in verification.verdicts}
     comments = []
 
     for f in reasoning.findings:
         if not f.line:
             continue   # no-line findings go into the summary body instead
-        verdict = verdict_map.get(f.rule)
+        verdict = _verdict_for_finding(f, verdict_map, verification.verdicts)
         body = _format_finding_comment(f, verdict)
         comments.append({
             "path": f.file,
@@ -159,10 +159,10 @@ def _build_all_findings_as_body(
     verification: VerificationOutput,
 ) -> str:
     """Format all findings into the review body (used when inline comments fail)."""
-    verdict_map = {v.rule: v for v in verification.verdicts}
+    verdict_map = {_finding_key(v.file, v.rule, v.line): v for v in verification.verdicts}
     sections = ["\n---\n### Detailed Findings\n"]
     for f in reasoning.findings:
-        verdict = verdict_map.get(f.rule)
+        verdict = _verdict_for_finding(f, verdict_map, verification.verdicts)
         location = f"`{f.file}`" + (f" L{f.line}" if f.line else "")
         sections.append(f"#### {location}")
         sections.append(_format_finding_comment(f, verdict))
@@ -175,17 +175,40 @@ def _build_no_line_findings_section(
     verification: VerificationOutput,
 ) -> str:
     """Findings without a line number, formatted for the review summary body."""
-    verdict_map = {v.rule: v for v in verification.verdicts}
+    verdict_map = {_finding_key(v.file, v.rule, v.line): v for v in verification.verdicts}
     no_line = [f for f in reasoning.findings if not f.line]
     if not no_line:
         return ""
 
     lines = ["\n---\n### File-level findings\n"]
     for f in no_line:
-        verdict = verdict_map.get(f.rule)
+        verdict = _verdict_for_finding(f, verdict_map, verification.verdicts)
         lines.append(_format_finding_comment(f, verdict))
         lines.append("")
     return "\n".join(lines)
+
+
+def _finding_key(file: str, rule: str, line: int | None) -> tuple[str, str, int | None]:
+    return (file.strip(), rule.strip(), line)
+
+
+def _verdict_for_finding(
+    finding: ReasonedFinding,
+    verdict_map: dict[tuple[str, str, int | None], PatchVerdict],
+    all_verdicts: list[PatchVerdict],
+) -> PatchVerdict | None:
+    exact = verdict_map.get(_finding_key(finding.file, finding.rule, finding.line))
+    if exact:
+        return exact
+
+    no_line = verdict_map.get(_finding_key(finding.file, finding.rule, None))
+    if no_line:
+        return no_line
+
+    for verdict in all_verdicts:
+        if verdict.file == finding.file and verdict.rule == finding.rule:
+            return verdict
+    return None
 
 
 def _format_finding_comment(

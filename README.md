@@ -106,6 +106,9 @@ GITHUB_ID=your_github_oauth_app_id
 GITHUB_SECRET=your_github_oauth_app_secret
 NEXTAUTH_SECRET=your_random_secret_string
 NEXTAUTH_URL=http://localhost:3000
+BACKEND_URL=http://localhost:8000
+API_SECRET=same_secret_used_in_backend
+NEXT_PUBLIC_GITHUB_APP_INSTALL_URL=https://github.com/apps/your-app-slug/installations/new
 ```
 
 Start the frontend:
@@ -131,6 +134,7 @@ GITHUB_PRIVATE_KEY=/path/to/your/private-key.pem
 GITHUB_WEBHOOK_SECRET=your_webhook_secret
 GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-2.5-flash
+API_SECRET=same_secret_used_in_frontend
 DATABASE_URL=sqlite:///./scans.db
 ```
 
@@ -160,5 +164,9 @@ Set your Smee URL as the webhook URL in your GitHub App settings.
 ## Current Status
 
 This project is **locally hosted** and was built for Hack the Bay 2026.
+
+## Production Deployment
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the hardened production setup checklist (Vercel + Railway, GitHub App permissions, and post-deploy validation steps).
 
 ---

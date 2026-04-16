@@ -4,6 +4,8 @@ import { useSession } from "next-auth/react"
 import { useEffect, useState } from "react"
 import Link from "next/link"
 import { Shield, AlertTriangle, CheckCircle, Clock, GitPullRequest, ExternalLink, Search, ArrowRight } from "lucide-react"
+import { useNow } from "@/hooks/use-now"
+import { formatLocalDateTime, formatRelativeTime, getUserTimeZone } from "@/lib/time"
 
 interface ScanRun {
   id: number
@@ -21,6 +23,10 @@ const verdictConfig: Record<string, { label: string; className: string; icon: ty
   warning: { label: "Warning", className: "bg-amber-50 text-amber-700 border-amber-200", icon: AlertTriangle },
   fail: { label: "Fail", className: "bg-red-50 text-red-700 border-red-200", icon: Shield },
 }
+
+const GITHUB_APP_INSTALL_URL =
+  process.env.NEXT_PUBLIC_GITHUB_APP_INSTALL_URL ||
+  "https://github.com/apps/iac-scanner-dev/installations/new"
 
 function VerdictBadge({ verdict }: { verdict: string | null }) {
   if (!verdict) {
@@ -58,32 +64,58 @@ export default function DashboardPage() {
   const [scans, setScans] = useState<ScanRun[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const now = useNow(30_000)
+  const userTimeZone = getUserTimeZone()
 
   useEffect(() => {
-    async function fetchScans() {
-      if (!session?.user) return
-      const login = (session.user as { login?: string }).login
+    if (!session?.user) return
+
+    let cancelled = false
+
+    async function fetchScans(showLoader = false) {
+      if (!session?.user || cancelled) return
+      const login = (session.user as { login?: string } | undefined)?.login
       if (!login) {
-        setLoading(false)
-        setError("Session missing GitHub login. Please sign out and sign back in.")
+        if (!cancelled) {
+          setLoading(false)
+          setError("Session missing GitHub login. Please sign out and sign back in.")
+        }
         return
       }
+
+      if (showLoader) setLoading(true)
+
       try {
-        const res = await fetch(`/api/scans?owner=${encodeURIComponent(login)}`)
+        const res = await fetch("/api/scans")
         if (res.ok) {
           const data = await res.json()
-          setScans(Array.isArray(data) ? data : [])
+          if (!cancelled) {
+            setError(null)
+            setScans(Array.isArray(data) ? data : [])
+          }
         } else {
-          setScans([])
+          if (!cancelled) setScans([])
         }
       } catch {
-        setError("Could not connect to backend")
+        if (!cancelled) setError("Could not connect to backend")
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
-    fetchScans()
-  }, [session])
+
+    fetchScans(true)
+
+    const pollTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchScans(false)
+      }
+    }, 10_000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(pollTimer)
+    }
+  }, [session?.user?.login])
 
   const totalScans = scans.length
   const totalFindings = scans.filter((s) => s.verdict === "warning" || s.verdict === "fail").length
@@ -186,7 +218,7 @@ export default function DashboardPage() {
                   <p className="text-sm font-medium text-foreground">Install the Polaris GitHub App</p>
                   <p className="mt-0.5 text-xs text-muted-foreground">Grant Polaris access to the repos you want scanned.</p>
                   <a
-                    href="https://github.com/apps/iac-scanner-dev/installations/new"
+                    href={GITHUB_APP_INSTALL_URL}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-foreground underline underline-offset-2 hover:no-underline"
@@ -238,7 +270,9 @@ export default function DashboardPage() {
                       <code className="rounded bg-muted/50 px-1 py-0.5 font-mono text-[11px]">
                         {scan.head_sha.slice(0, 7)}
                       </code>
-                      <span>{new Date(scan.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                      <span title={`${formatLocalDateTime(scan.created_at)} (${userTimeZone})`}>
+                        {formatLocalDateTime(scan.created_at)} ({formatRelativeTime(scan.created_at, now)})
+                      </span>
                     </div>
                   </div>
                 </Link>

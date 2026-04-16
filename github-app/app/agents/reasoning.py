@@ -46,10 +46,12 @@ You will receive:
 
 Your job:
 - Prioritise the findings by real-world exploitability and blast radius.
-- For each finding, explain the risk in plain language suitable for a developer.
-- Where applicable, propose a minimal, correct patch (diff or replacement block).
+- For each finding, write a clear explanation in 1-2 sentences suitable for a developer.
+- Write risk_context in this style: "Threat: ... Impact: ...".
+- Where applicable, propose a minimal, correct patch (prefer unified diff snippets).
 - Identify any additional issues the deterministic scanner may have missed.
 - Provide an overall risk rating and a concise executive summary.
+- Keep findings specific (file + line), avoid duplicates, and do not invent files.
 
 Respond ONLY with valid JSON matching the schema provided. No markdown fences.
 """

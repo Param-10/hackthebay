@@ -3,6 +3,7 @@ import base64
 import os
 import re
 import time
+from datetime import datetime, timezone
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, BackgroundTasks, Request, HTTPException, Depends
@@ -22,6 +23,18 @@ API_SECRET = os.environ.get("API_SECRET", "")
 _rate_buckets: dict[str, list[float]] = defaultdict(list)
 RATE_LIMIT = 60
 RATE_WINDOW = 60
+
+
+def _to_utc_iso(value: datetime) -> str:
+    """
+    Return a stable UTC ISO-8601 timestamp for API responses.
+    SQLite can return naive datetimes; we treat them as UTC.
+    """
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def _check_rate_limit(key: str) -> None:
@@ -78,18 +91,20 @@ async def health():
 
 @app.get("/scans")
 async def list_all_scans(request: Request, owner: str | None = None, limit: int = 50, _auth=Depends(verify_api_auth)):
-    """List recent scan runs, optionally filtered by repo owner."""
+    """List recent scan runs for a specific repo owner."""
     _check_rate_limit(request.client.host if request.client else "unknown")
+    if not owner:
+        raise HTTPException(status_code=400, detail="owner query parameter is required")
     if limit < 1 or limit > 200:
         limit = 50
     from app.database import SessionLocal
     from app.models import ScanRun
     db = SessionLocal()
     try:
-        query = db.query(ScanRun)
-        if owner:
-            safe_owner = re.sub(r"[^a-zA-Z0-9_\-.]", "", owner)
-            query = query.filter(ScanRun.repo_full_name.startswith(f"{safe_owner}/"))
+        safe_owner = re.sub(r"[^a-zA-Z0-9_\-.]", "", owner)
+        if not safe_owner:
+            raise HTTPException(status_code=400, detail="Invalid owner")
+        query = db.query(ScanRun).filter(ScanRun.repo_full_name.startswith(f"{safe_owner}/"))
         runs = query.order_by(ScanRun.created_at.desc()).limit(limit).all()
         return [
             {
@@ -100,7 +115,7 @@ async def list_all_scans(request: Request, owner: str | None = None, limit: int 
                 "status": r.status,
                 "verdict": r.verdict,
                 "summary": r.summary,
-                "created_at": r.created_at.isoformat(),
+                "created_at": _to_utc_iso(r.created_at),
             }
             for r in runs
         ]
@@ -163,7 +178,7 @@ async def get_scan_meta(request: Request, scan_id: int, _auth=Depends(verify_api
             "status": run.status,
             "verdict": run.verdict,
             "summary": run.summary,
-            "created_at": run.created_at.isoformat(),
+            "created_at": _to_utc_iso(run.created_at),
         }
     finally:
         db.close()
@@ -472,7 +487,7 @@ async def list_scans(request: Request, repo_owner: str, repo_name: str, limit: i
                 "status": r.status,
                 "verdict": r.verdict,
                 "summary": r.summary,
-                "created_at": r.created_at.isoformat(),
+                "created_at": _to_utc_iso(r.created_at),
             }
             for r in runs
         ]

@@ -4,6 +4,8 @@ import { useSession } from "next-auth/react"
 import { useEffect, useState } from "react"
 import Link from "next/link"
 import { Shield, AlertTriangle, CheckCircle, Clock, GitPullRequest, ExternalLink, Search } from "lucide-react"
+import { useNow } from "@/hooks/use-now"
+import { formatLocalDateTime, formatRelativeTime, getUserTimeZone } from "@/lib/time"
 
 interface ScanRun {
   id: number
@@ -63,32 +65,58 @@ export default function ScansPage() {
   const [error, setError] = useState<string | null>(null)
   const [verdictFilter, setVerdictFilter] = useState<FilterVerdict>("all")
   const [statusFilter, setStatusFilter] = useState<FilterStatus>("all")
+  const now = useNow(30_000)
+  const userTimeZone = getUserTimeZone()
 
   useEffect(() => {
-    async function fetchScans() {
-      if (!session?.user) return
-      const login = (session.user as { login?: string }).login
+    if (!session?.user) return
+
+    let cancelled = false
+
+    async function fetchScans(showLoader = false) {
+      if (!session?.user || cancelled) return
+      const login = (session.user as { login?: string } | undefined)?.login
       if (!login) {
-        setLoading(false)
-        setError("Session missing GitHub login. Please sign out and sign back in.")
+        if (!cancelled) {
+          setLoading(false)
+          setError("Session missing GitHub login. Please sign out and sign back in.")
+        }
         return
       }
+
+      if (showLoader) setLoading(true)
+
       try {
-        const res = await fetch(`/api/scans?owner=${encodeURIComponent(login)}`)
+        const res = await fetch("/api/scans")
         if (res.ok) {
           const data = await res.json()
-          setScans(Array.isArray(data) ? data : [])
+          if (!cancelled) {
+            setError(null)
+            setScans(Array.isArray(data) ? data : [])
+          }
         } else {
-          setScans([])
+          if (!cancelled) setScans([])
         }
       } catch {
-        setError("Could not connect to backend")
+        if (!cancelled) setError("Could not connect to backend")
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
-    fetchScans()
-  }, [session])
+
+    fetchScans(true)
+
+    const pollTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchScans(false)
+      }
+    }, 10_000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(pollTimer)
+    }
+  }, [session?.user?.login])
 
   const filtered = scans.filter((s) => {
     if (verdictFilter !== "all" && s.verdict !== verdictFilter) return false
@@ -198,7 +226,9 @@ export default function ScansPage() {
                       <code className="rounded bg-muted/50 px-1 py-0.5 font-mono text-[11px]">
                         {scan.head_sha.slice(0, 7)}
                       </code>
-                      <span>{new Date(scan.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                      <span title={`${formatLocalDateTime(scan.created_at)} (${userTimeZone})`}>
+                        {formatLocalDateTime(scan.created_at)} ({formatRelativeTime(scan.created_at, now)})
+                      </span>
                     </div>
                   </div>
                 </Link>

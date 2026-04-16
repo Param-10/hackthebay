@@ -12,11 +12,12 @@ import {
   AlertTriangle,
   Info,
   ExternalLink,
-  GitPullRequest,
   Zap,
   Loader2,
   Check,
 } from "lucide-react"
+import { useNow } from "@/hooks/use-now"
+import { formatLocalDateTime, formatRelativeTime, getUserTimeZone } from "@/lib/time"
 
 interface ScanMeta {
   id: number
@@ -59,6 +60,21 @@ function SeverityBadge({ severity }: { severity: string }) {
   return (
     <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium ${config.className}`}>
       <Icon className="h-3 w-3" /> {config.label}
+    </span>
+  )
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const styles: Record<string, string> = {
+    completed: "bg-emerald-50 text-emerald-700",
+    running: "bg-blue-50 text-blue-700",
+    pending: "bg-muted/50 text-muted-foreground",
+    failed: "bg-red-50 text-red-700",
+  }
+
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles[status] || styles.pending}`}>
+      {status}
     </span>
   )
 }
@@ -138,9 +154,15 @@ export default function ScanDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [applyStates, setApplyStates] = useState<Record<number, ApplyState>>({})
+  const now = useNow(30_000)
+  const userTimeZone = getUserTimeZone()
 
   useEffect(() => {
-    async function fetchData() {
+    let cancelled = false
+
+    async function fetchData(showLoader = false) {
+      if (showLoader) setLoading(true)
+
       try {
         const [metaRes, findingsRes] = await Promise.all([
           fetch(`/api/scans/${scanId}/meta`),
@@ -148,30 +170,49 @@ export default function ScanDetailPage() {
         ])
 
         if (metaRes.ok) {
-          setMeta(await metaRes.json())
+          if (!cancelled) {
+            setMeta(await metaRes.json())
+            setError(null)
+          }
         }
 
         if (findingsRes.ok) {
           const data = await findingsRes.json()
           const findingsList = Array.isArray(data) ? data : []
-          setFindings(findingsList)
-          const initialStates: Record<number, ApplyState> = {}
-          for (const f of findingsList) {
-            if (f.fix_applied) initialStates[f.id] = "applied"
+          if (!cancelled) {
+            setFindings(findingsList)
+            setApplyStates((prev) => {
+              const next = { ...prev }
+              for (const f of findingsList) {
+                if (f.fix_applied) next[f.id] = "applied"
+              }
+              return next
+            })
           }
-          setApplyStates(initialStates)
         } else if (findingsRes.status === 404) {
-          setFindings([])
+          if (!cancelled) setFindings([])
         } else {
-          setError("Failed to load findings")
+          if (!cancelled) setError("Failed to load findings")
         }
       } catch {
-        setError("Could not connect to backend")
+        if (!cancelled) setError("Could not connect to backend")
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
-    fetchData()
+
+    fetchData(true)
+
+    const pollTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchData(false)
+      }
+    }, 8_000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(pollTimer)
+    }
   }, [scanId])
 
   const handleApplyFix = useCallback(async (findingId: number) => {
@@ -221,7 +262,10 @@ export default function ScanDetailPage() {
                 <code className="rounded bg-muted/50 px-1.5 py-0.5 font-mono text-xs">
                   {meta.head_sha.slice(0, 7)}
                 </code>
-                <span>{new Date(meta.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                <StatusBadge status={meta.status} />
+                <span title={`${formatLocalDateTime(meta.created_at)} (${userTimeZone})`}>
+                  {formatLocalDateTime(meta.created_at)} ({formatRelativeTime(meta.created_at, now)})
+                </span>
               </div>
             )}
             <p className="mt-1 text-sm text-muted-foreground">
@@ -285,13 +329,23 @@ export default function ScanDetailPage() {
           <p className="mt-3 text-sm font-medium text-foreground">{error}</p>
         </div>
       ) : findings.length === 0 ? (
-        <div className="rounded-lg border border-border/60 bg-card px-5 py-16 text-center">
-          <CheckCircle className="mx-auto h-8 w-8 text-emerald-500" />
-          <p className="mt-3 text-sm font-medium text-foreground">No findings</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            This scan completed without detecting any issues.
-          </p>
-        </div>
+        meta?.status === "failed" ? (
+          <div className="rounded-lg border border-red-200 bg-red-50/40 px-5 py-16 text-center">
+            <XCircle className="mx-auto h-8 w-8 text-red-500" />
+            <p className="mt-3 text-sm font-medium text-foreground">Scan failed</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {meta.summary || "Gemini was unavailable for this scan. Please retry."}
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-border/60 bg-card px-5 py-16 text-center">
+            <CheckCircle className="mx-auto h-8 w-8 text-emerald-500" />
+            <p className="mt-3 text-sm font-medium text-foreground">No findings</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              This scan completed without detecting any issues.
+            </p>
+          </div>
+        )
       ) : (
         <div className="space-y-4">
           {findings.map((finding) => (

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 class PatchVerdict(BaseModel):
     rule: str
     file: str
+    line: int | None = None
     patch_valid: bool          # Does the patch actually fix the issue?
     patch_minimal: bool        # Does it touch only what's needed?
     patch_safe: bool           # No new vulnerabilities introduced?
@@ -45,6 +46,8 @@ For each finding and its proposed patch, you must verify:
 3. Safety     – Does the patch introduce any new security issues or break functionality?
 
 Be critical. Reject patches that are incomplete, overly broad, or introduce new risks.
+For each verdict, preserve the original `file`, `rule`, and `line` values from the input.
+Return exactly one verdict per input finding.
 Respond ONLY with valid JSON matching the schema. No markdown fences.
 """
 
