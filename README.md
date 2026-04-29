@@ -4,6 +4,8 @@
 
 Polaris is an autonomous security agent that connects to GitHub as an App, scans every Pull Request containing infrastructure code, and posts inline findings with one-click auto-fix — all in under 60 seconds.
 
+[**Live demo →**](https://polaris-livid-one.vercel.app) · [Backend status](https://stats.uptimerobot.com/lMd1MkrQaT)
+
 ---
 
 ## The Problems
@@ -66,17 +68,32 @@ PR Opened → GitHub Webhook → FastAPI Backend → Deterministic Scan
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | Next.js 15, React, Tailwind CSS |
-| Auth | NextAuth.js with GitHub OAuth |
-| Backend | Python, FastAPI |
-| AI | Gemini 2.5 Flash / 3 Flash (configurable, dual-agent reasoning + verification) |
-| Database | SQLite (local), PostgreSQL-ready |
-| Webhook Proxy | Smee.io (local dev) |
-| Deployment | Locally hosted (Vercel + Railway ready) |
+| Layer       | Technology |
+|-------------|-----------|
+| Frontend    | Next.js 16, React 19, Tailwind CSS |
+| Auth        | NextAuth.js with GitHub OAuth |
+| Backend     | Python 3.11, FastAPI, Uvicorn |
+| AI          | Gemini 2.5 Flash (dual-agent: reasoning + verification) |
+| Database    | PostgreSQL (Neon) |
+| Hosting     | Vercel (frontend) · Render (backend) · Neon (DB) |
+| Uptime      | UptimeRobot ping every 5 min |
 
-## Running Locally
+## Live Deployment
+
+Polaris is deployed end-to-end on free-tier hosting:
+
+| Component | URL |
+|-----------|-----|
+| Frontend  | https://polaris-livid-one.vercel.app |
+| Backend   | https://polaris-backend-4xoy.onrender.com |
+| Health    | https://polaris-backend-4xoy.onrender.com/health |
+| Uptime    | https://stats.uptimerobot.com/lMd1MkrQaT |
+
+To try it on your own repo, install the [Polaris GitHub App](https://github.com/apps/polaris-infra/installations/new), open a PR with an infra file (`.tf`, `Dockerfile`, `k8s.yaml`, or `.github/workflows/*.yml`), and watch the scan land within ~30 seconds.
+
+## Running Locally (Development)
+
+For contributing or local testing — production users should just use the live deployment above.
 
 ### Prerequisites
 
@@ -161,12 +178,6 @@ Set your Smee URL as the webhook URL in your GitHub App settings.
 2. Open a PR with infrastructure files (`.tf`, `Dockerfile`, `k8s.yaml`, `.github/workflows/*.yml`)
 3. Watch the scan results appear on the PR and in the dashboard at `http://localhost:3000/dashboard`
 
-## Current Status
-
-This project is **locally hosted** and was built for Hack the Bay 2026.
-
-## Production Deployment
-
-See [DEPLOYMENT.md](DEPLOYMENT.md) for the hardened production setup checklist (Vercel + Railway, GitHub App permissions, and post-deploy validation steps).
-
 ---
+
+Built for Hack the Bay 2026.
