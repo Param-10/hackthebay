@@ -10,7 +10,7 @@ Polaris is an autonomous security agent that connects to GitHub as an App, scans
 
 ![Next.js](https://img.shields.io/badge/Next.js%2016-black?logo=nextdotjs)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
-![Gemini](https://img.shields.io/badge/Gemini%202.5%20Flash-4285F4?logo=google&logoColor=white)
+![Gemini](https://img.shields.io/badge/Gemini%203%20Flash%20Preview-4285F4?logo=google&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-336791?logo=postgresql&logoColor=white)
 ![Vercel](https://img.shields.io/badge/Vercel-000000?logo=vercel&logoColor=white)
 ![Render](https://img.shields.io/badge/Render-46E3B7?logo=render&logoColor=white)
@@ -82,7 +82,7 @@ PR Opened → GitHub Webhook → FastAPI Backend → Deterministic Scan
 | Frontend    | Next.js 16, React 19, Tailwind CSS |
 | Auth        | NextAuth.js with GitHub OAuth |
 | Backend     | Python 3.11, FastAPI, Uvicorn |
-| AI          | Gemini 2.5 Flash (dual-agent: reasoning + verification) |
+| AI          | Gemini 3 Flash Preview (dual-agent: reasoning + verification) |
 | Database    | PostgreSQL (Neon) |
 | Hosting     | Vercel (frontend) · Render (backend) · Neon (DB) |
 | Uptime      | UptimeRobot ping every 5 min |
@@ -159,7 +159,7 @@ GITHUB_APP_ID=your_app_id
 GITHUB_PRIVATE_KEY=/path/to/your/private-key.pem
 GITHUB_WEBHOOK_SECRET=your_webhook_secret
 GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3-flash-preview
 API_SECRET=same_secret_used_in_frontend
 DATABASE_URL=sqlite:///./scans.db
 ```
