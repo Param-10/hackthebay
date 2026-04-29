@@ -7,6 +7,13 @@ declare module "next-auth" {
   }
 }
 
+declare module "next-auth/jwt" {
+  interface JWT {
+    login?: string
+    accessToken?: string
+  }
+}
+
 export const authOptions: AuthOptions = {
   providers: [
     GitHubProvider({
@@ -21,7 +28,10 @@ export const authOptions: AuthOptions = {
     signIn: "/login",
   },
   callbacks: {
-    async jwt({ token, profile }) {
+    async jwt({ token, profile, account }) {
+      if (account?.access_token) {
+        token.accessToken = account.access_token
+      }
       if (profile) {
         token.login = (profile as { login?: string }).login
       }

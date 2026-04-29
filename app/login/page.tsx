@@ -59,7 +59,7 @@ export default function LoginPage() {
 
           {/* Heading */}
           <h1 className="mt-8 text-center text-xl font-medium tracking-tight text-foreground">
-            Sign in to your account
+            Get started with Polaris
           </h1>
           <p className="mt-2 text-center text-sm text-muted-foreground">
             Connect your GitHub to start scanning PRs and fixing vulnerabilities.

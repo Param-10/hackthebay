@@ -46,7 +46,7 @@ export function Navbar() {
         ) : (
           <Link href="/login">
             <Button size="sm" className="h-9 px-5 text-sm">
-              Sign Up
+              Get started
             </Button>
           </Link>
         )}

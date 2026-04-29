@@ -1,6 +1,3 @@
-import Link from "next/link"
-import { Button } from "@/components/ui/button"
-import { ArrowRight } from "lucide-react"
 import { HeroFlow } from "./hero-flow"
 
 export function Hero() {
@@ -26,17 +23,10 @@ export function Hero() {
           <p className="mt-5 max-w-xl text-base leading-relaxed text-muted-foreground sm:text-[17px]">
             The AI-powered DevOps agent for engineering teams. Detect vulnerabilities, generate fixes, and automate PR reviews with Gemini precision.
           </p>
-          <div className="mt-7 flex flex-wrap items-center gap-3">
-            <Link href="/login">
-              <Button className="h-10 gap-2 px-5 text-sm">
-                Connect to GitHub <ArrowRight className="h-3.5 w-3.5" />
-              </Button>
-            </Link>
-          </div>
         </div>
 
         {/* How Polaris works flow */}
-        <div className="mt-14 sm:mt-16">
+        <div className="mt-12 sm:mt-14">
           <HeroFlow />
         </div>
       </div>

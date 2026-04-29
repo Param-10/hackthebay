@@ -18,6 +18,16 @@ interface ScanRun {
   repo_full_name?: string
 }
 
+interface Installation {
+  id: number
+  account: {
+    login: string
+    avatar_url: string
+    type: string
+    html_url?: string
+  } | null
+}
+
 const verdictConfig: Record<string, { label: string; className: string; icon: typeof CheckCircle }> = {
   pass: { label: "Pass", className: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: CheckCircle },
   warning: { label: "Warning", className: "bg-amber-50 text-amber-700 border-amber-200", icon: AlertTriangle },
@@ -64,6 +74,7 @@ export default function DashboardPage() {
   const [scans, setScans] = useState<ScanRun[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [installations, setInstallations] = useState<Installation[] | null>(null)
   const now = useNow(30_000)
   const userTimeZone = getUserTimeZone()
 
@@ -114,6 +125,32 @@ export default function DashboardPage() {
     return () => {
       cancelled = true
       window.clearInterval(pollTimer)
+    }
+  }, [session?.user?.login])
+
+  useEffect(() => {
+    if (!session?.user) return
+    let cancelled = false
+
+    async function fetchInstallations() {
+      try {
+        const res = await fetch("/api/github/installations")
+        if (!res.ok) {
+          if (!cancelled) setInstallations([])
+          return
+        }
+        const data = await res.json()
+        if (!cancelled) {
+          setInstallations(Array.isArray(data?.installations) ? data.installations : [])
+        }
+      } catch {
+        if (!cancelled) setInstallations([])
+      }
+    }
+
+    fetchInstallations()
+    return () => {
+      cancelled = true
     }
   }, [session?.user?.login])
 
@@ -200,51 +237,110 @@ export default function DashboardPage() {
             <p className="mt-1 text-xs text-muted-foreground">{error}</p>
           </div>
         ) : scans.length === 0 ? (
-          <div className="px-5 py-12">
-            <div className="mx-auto max-w-md text-center">
-              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-muted/50">
-                <GitPullRequest className="h-6 w-6 text-muted-foreground" />
-              </div>
-              <p className="mt-4 text-base font-medium text-foreground">Get started with Polaris</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Follow these steps to trigger your first security scan.
-              </p>
-            </div>
+          (() => {
+            const isInstalled = installations !== null && installations.length > 0
+            const orgList = (installations ?? [])
+              .map((i) => i.account?.login)
+              .filter(Boolean) as string[]
+            const orgLabel =
+              orgList.length === 0
+                ? ""
+                : orgList.length === 1
+                ? orgList[0]
+                : orgList.length === 2
+                ? `${orgList[0]} and ${orgList[1]}`
+                : `${orgList[0]}, ${orgList[1]} +${orgList.length - 2} more`
 
-            <div className="mx-auto mt-8 max-w-lg space-y-4">
-              <div className="flex items-start gap-4 rounded-lg border border-border/60 bg-background p-4">
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-foreground text-xs font-bold text-background">1</div>
-                <div>
-                  <p className="text-sm font-medium text-foreground">Install the Polaris GitHub App</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">Grant Polaris access to the repos you want scanned.</p>
-                  <a
-                    href={GITHUB_APP_INSTALL_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-foreground underline underline-offset-2 hover:no-underline"
-                  >
-                    Install on GitHub <ExternalLink className="h-3 w-3" />
-                  </a>
+            return (
+              <div className="px-5 py-12">
+                <div className="mx-auto max-w-md text-center">
+                  <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-muted/50">
+                    <GitPullRequest className="h-6 w-6 text-muted-foreground" />
+                  </div>
+                  <p className="mt-4 text-base font-medium text-foreground">
+                    {isInstalled ? "You're almost there" : "Get started with Polaris"}
+                  </p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {isInstalled
+                      ? `Polaris is installed on ${orgLabel}. Open a PR with infra files to trigger your first scan.`
+                      : "Follow these steps to trigger your first security scan."}
+                  </p>
+                </div>
+
+                <div className="mx-auto mt-8 max-w-lg space-y-4">
+                  {isInstalled ? (
+                    <div className="flex items-start gap-4 rounded-lg border border-emerald-200 bg-emerald-50/50 p-4">
+                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-background">
+                        <CheckCircle className="h-4 w-4" />
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-foreground">Polaris GitHub App installed</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Active on {orgLabel}.
+                        </p>
+                        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                          <a
+                            href={GITHUB_APP_INSTALL_URL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs font-medium text-foreground underline underline-offset-2 hover:no-underline"
+                          >
+                            Add another organization <ExternalLink className="h-3 w-3" />
+                          </a>
+                          {installations && installations[0]?.account?.html_url && (
+                            <a
+                              href={installations[0].account.html_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground hover:no-underline"
+                            >
+                              Manage on GitHub <ExternalLink className="h-3 w-3" />
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-4 rounded-lg border border-border/60 bg-background p-4">
+                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-foreground text-xs font-bold text-background">1</div>
+                      <div>
+                        <p className="text-sm font-medium text-foreground">Install the Polaris GitHub App</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">Grant Polaris access to the repos you want scanned.</p>
+                        <a
+                          href={GITHUB_APP_INSTALL_URL}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-foreground underline underline-offset-2 hover:no-underline"
+                        >
+                          Install on GitHub <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-start gap-4 rounded-lg border border-border/60 bg-background p-4">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-foreground text-xs font-bold text-background">
+                      {isInstalled ? 1 : 2}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-foreground">Open a Pull Request</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">Push infrastructure code (Terraform, Kubernetes, Dockerfile, or GitHub Actions) and open a PR.</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-4 rounded-lg border border-border/60 bg-background p-4">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-foreground text-xs font-bold text-background">
+                      {isInstalled ? 2 : 3}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-foreground">Polaris scans automatically</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">Gemini analyzes your code, posts inline findings on the PR, and results appear here.</p>
+                    </div>
+                  </div>
                 </div>
               </div>
-
-              <div className="flex items-start gap-4 rounded-lg border border-border/60 bg-background p-4">
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-foreground text-xs font-bold text-background">2</div>
-                <div>
-                  <p className="text-sm font-medium text-foreground">Open a Pull Request</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">Push infrastructure code (Terraform, Kubernetes, Dockerfile, or GitHub Actions) and open a PR.</p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-4 rounded-lg border border-border/60 bg-background p-4">
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-foreground text-xs font-bold text-background">3</div>
-                <div>
-                  <p className="text-sm font-medium text-foreground">Polaris scans automatically</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">Gemini analyzes your code, posts inline findings on the PR, and results appear here.</p>
-                </div>
-              </div>
-            </div>
-          </div>
+            )
+          })()
         ) : (
           <div className="divide-y divide-border/60">
             {scans.slice(0, 3).map((scan) => (
