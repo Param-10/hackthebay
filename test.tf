@@ -1,6 +1,6 @@
 resource "aws_s3_bucket" "demo" {
   bucket = "polaris-test-bucket-demo"
-  acl    = "public-read"
+  acl    = "private"
 }
 
 resource "aws_security_group" "open_world" {
