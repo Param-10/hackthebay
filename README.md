@@ -4,7 +4,16 @@
 
 Polaris is an autonomous security agent that connects to GitHub as an App, scans every Pull Request containing infrastructure code, and posts inline findings with one-click auto-fix — all in under 60 seconds.
 
-[**Live demo →**](https://polaris-livid-one.vercel.app) · [Backend status](https://stats.uptimerobot.com/lMd1MkrQaT)
+[![Live Demo](https://img.shields.io/badge/live%20demo-polaris--livid--one.vercel.app-black?style=for-the-badge&logo=vercel)](https://polaris-livid-one.vercel.app)
+[![Backend Status](https://img.shields.io/badge/backend%20status-uptimerobot-44CC11?style=for-the-badge&logo=statuspage&logoColor=white)](https://stats.uptimerobot.com/lMd1MkrQaT)
+[![Install GitHub App](https://img.shields.io/badge/install-github%20app-181717?style=for-the-badge&logo=github)](https://github.com/apps/polaris-infra/installations/new)
+
+![Next.js](https://img.shields.io/badge/Next.js%2016-black?logo=nextdotjs)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![Gemini](https://img.shields.io/badge/Gemini%202.5%20Flash-4285F4?logo=google&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-336791?logo=postgresql&logoColor=white)
+![Vercel](https://img.shields.io/badge/Vercel-000000?logo=vercel&logoColor=white)
+![Render](https://img.shields.io/badge/Render-46E3B7?logo=render&logoColor=white)
 
 ---
 
