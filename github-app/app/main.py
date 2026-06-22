@@ -84,12 +84,12 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     return JSONResponse({"status": "queued", "pr": job["pr_number"]})
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     return {"status": "ok", "service": "polaris-api"}
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     return {"status": "ok"}
 
