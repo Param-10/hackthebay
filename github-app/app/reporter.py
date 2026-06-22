@@ -7,6 +7,7 @@ import httpx
 from app.scanner.fetcher import _auth_headers
 from app.agents.reasoning import ReasoningOutput, ReasonedFinding
 from app.agents.verification import VerificationOutput, PatchVerdict
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,35 @@ VERDICT_STATE = {
 }
 
 
+def _bot_already_reviewed(repo: str, pr_number: int, head_sha: str, token: str) -> bool:
+    """Check if the bot already posted a review on this exact commit."""
+    try:
+        resp = httpx.get(
+            f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}/reviews",
+            headers=_auth_headers(token),
+            params={"per_page": 100},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return False
+        reviews = resp.json()
+        app_id = get_settings().github_app_id
+        for review in reviews:
+            user = review.get("user", {})
+            # GitHub App bot reviews have user.type == "Bot"
+            is_bot = user.get("type") == "Bot" and "[bot]" in user.get("login", "")
+            same_commit = review.get("commit_id") == head_sha
+            if is_bot and same_commit:
+                logger.info(
+                    "Bot already reviewed %s PR#%s at %s — skipping duplicate",
+                    repo, pr_number, head_sha[:8],
+                )
+                return True
+    except Exception:
+        logger.warning("Failed to check existing reviews for %s PR#%s", repo, pr_number)
+    return False
+
+
 def post_pr_review(
     repo: str,
     pr_number: int,
@@ -38,7 +68,10 @@ def post_pr_review(
     verification: VerificationOutput,
 ) -> None:
     """Post a PR review with inline comments and a summary body.
-    Falls back to summary-only if inline comments reference stale lines."""
+    Falls back to summary-only if inline comments reference stale lines.
+    Skips if the bot already reviewed this commit."""
+    if _bot_already_reviewed(repo, pr_number, head_sha, token):
+        return
     comments = _build_inline_comments(reasoning, verification)
     body = _build_summary_body(reasoning, verification)
     headers = _auth_headers(token)

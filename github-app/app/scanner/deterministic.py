@@ -26,7 +26,7 @@ def run_deterministic(files: dict[str, str]) -> ScanResult:
     scanned: list[str] = []
 
     for filename, content in files.items():
-        ftype = classify(filename)
+        ftype = classify(filename, content)
         scanner = _SCANNERS.get(ftype)
         if scanner is None:
             logger.debug("No scanner for %s (type=%s), skipping", filename, ftype)

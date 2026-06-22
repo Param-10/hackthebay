@@ -49,9 +49,23 @@ Your job:
 - For each finding, write a clear explanation in 1-2 sentences suitable for a developer.
 - Write risk_context in this style: "Threat: ... Impact: ...".
 - Where applicable, propose a minimal, correct patch (prefer unified diff snippets).
-- Identify any additional issues the deterministic scanner may have missed.
+- You may identify additional STRUCTURAL or CONFIGURATION security issues the deterministic \
+scanner may have missed (e.g., missing encryption, overly permissive roles, exposed secrets).
 - Provide an overall risk rating and a concise executive summary.
 - Keep findings specific (file + line), avoid duplicates, and do not invent files.
+
+CRITICAL CONSTRAINTS — you MUST follow these:
+1. NEVER claim that a package version, tool version, GitHub Action version, or runtime version \
+"does not exist", "is not released", or "is not valid". You have a training data cutoff and \
+CANNOT reliably verify whether a version exists. Version existence is NOT a security finding.
+2. NEVER flag lockfiles (pnpm-lock.yaml, yarn.lock, package-lock.json, etc.) or \
+machine-generated manifests as security issues. These are auto-generated and not IaC.
+3. NEVER flag the mere use of a specific version number of Node.js, pnpm, npm, TypeScript, \
+or any other tool/package as a security issue unless there is a KNOWN CVE you can cite.
+4. Only report findings about STRUCTURAL security patterns: misconfigurations, exposed secrets, \
+overly permissive permissions, missing encryption, unsafe defaults, injection vectors, etc.
+5. If a deterministic finding is clearly a false positive based on the file content, you may \
+omit it from your output rather than propagating it.
 
 Respond ONLY with valid JSON matching the schema provided. No markdown fences.
 """

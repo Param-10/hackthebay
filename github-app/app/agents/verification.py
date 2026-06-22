@@ -48,6 +48,15 @@ For each finding and its proposed patch, you must verify:
 Be critical. Reject patches that are incomplete, overly broad, or introduce new risks.
 For each verdict, preserve the original `file`, `rule`, and `line` values from the input.
 Return exactly one verdict per input finding.
+
+CRITICAL: If a finding's reasoning is based on claiming that a package version, tool version, \
+GitHub Action version, or runtime version "does not exist" or "is not released", you MUST \
+reject it with final_recommendation="reject" and note that version existence cannot be \
+verified by an LLM. These are false positives caused by training data cutoffs.
+
+Also reject findings about lockfiles (pnpm-lock.yaml, yarn.lock, package-lock.json) — \
+these are machine-generated and not infrastructure-as-code.
+
 Respond ONLY with valid JSON matching the schema. No markdown fences.
 """
 

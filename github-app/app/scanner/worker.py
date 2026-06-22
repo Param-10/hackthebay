@@ -16,7 +16,7 @@ from collections import defaultdict
 from app.database import SessionLocal
 from app.models import ScanRun, ScanFinding, ScanStatus, FinalVerdict
 from app.scanner.fetcher import get_installation_token, list_pr_files, get_file_content
-from app.scanner.filters import is_scannable
+from app.scanner.filters import is_scannable, classify, FileType
 from app.scanner.deterministic import run_deterministic
 from app.agents.reasoning import run_reasoning_agent, ReasoningOutput, ReasonedFinding
 from app.agents.verification import run_verification_agent, VerificationOutput, PatchVerdict
@@ -143,7 +143,21 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
         fname = meta["filename"]
         content = get_file_content(repo, fname, head_sha, token)
         if content is not None:
+            # Content-aware re-filter: now that we have content, verify the file
+            # is actually IaC (e.g., .yaml without K8s keys should be dropped)
+            if classify(fname, content) == FileType.unknown:
+                logger.debug("Dropped %s after content sniff (not IaC)", fname)
+                continue
             file_contents[fname] = content
+
+    if not file_contents:
+        logger.info("No infra files after content filtering in %s PR#%s – skipping", repo, pr_number)
+        scan_run.status = ScanStatus.completed
+        scan_run.verdict = FinalVerdict.pass_
+        scan_run.summary = "No infrastructure files changed."
+        db.commit()
+        post_commit_status(repo, head_sha, token, "pass", "No infra files changed.")
+        return
 
     logger.info("Scanning %d file(s) for %s PR#%s", len(file_contents), repo, pr_number)
 

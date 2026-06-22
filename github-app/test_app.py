@@ -194,9 +194,26 @@ from app.scanner.filters import classify, is_scannable, FileType
 test("Dockerfile classified",              lambda: assert_(classify("Dockerfile") == FileType.dockerfile))
 test(".tf classified as terraform",        lambda: assert_(classify("infra/main.tf") == FileType.terraform))
 test("GHA workflow classified",            lambda: assert_(classify(".github/workflows/ci.yml") == FileType.github_actions))
-test("k8s yaml classified",               lambda: assert_(classify("deploy/app.yaml") == FileType.kubernetes))
+test("k8s yaml classified (no content)",   lambda: assert_(classify("deploy/app.yaml") == FileType.kubernetes))
 test("python file not scannable",          lambda: assert_(not is_scannable("app/main.py")))
 test("Dockerfile is scannable",            lambda: assert_(is_scannable("Dockerfile")))
+
+# Lockfile exclusion
+test("pnpm-lock.yaml excluded",            lambda: assert_(classify("pnpm-lock.yaml") == FileType.unknown))
+test("pnpm-lock.yml excluded",             lambda: assert_(classify("pnpm-lock.yml") == FileType.unknown))
+test("pnpm-lock.yaml not scannable",       lambda: assert_(not is_scannable("pnpm-lock.yaml")))
+
+# Config file exclusion
+test(".prettierrc.yml excluded",           lambda: assert_(classify(".prettierrc.yml") == FileType.unknown))
+test(".eslintrc.yaml excluded",            lambda: assert_(classify(".eslintrc.yaml") == FileType.unknown))
+test("codecov.yml excluded",               lambda: assert_(classify("codecov.yml") == FileType.unknown))
+test(".pre-commit-config.yaml excluded",   lambda: assert_(classify(".pre-commit-config.yaml") == FileType.unknown))
+
+# K8s content sniff
+_K8S_MANIFEST = "apiVersion: v1\nkind: Pod\nmetadata:\n  name: test\n"
+_NON_K8S_YAML = "name: my-app\nversion: 1.0.0\n"
+test("K8s manifest detected by content",   lambda: assert_(classify("app.yaml", _K8S_MANIFEST) == FileType.kubernetes))
+test("Non-K8s yaml rejected by content",   lambda: assert_(classify("app.yaml", _NON_K8S_YAML) == FileType.unknown))
 
 
 # ── Webhook signature verification ────────────────────────────────────────────
