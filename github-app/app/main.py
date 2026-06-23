@@ -1,6 +1,5 @@
 import logging
 import base64
-import os
 import re
 import time
 from datetime import datetime, timezone
@@ -10,14 +9,17 @@ from fastapi import FastAPI, BackgroundTasks, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
 
 from app.database import init_db
+from app.config import get_settings
+from app.models import ScanStatus
 from app.webhook import parse_pr_event
-from app.scanner.worker import run_scan
+from app.scanner.worker import enqueue_scan, run_scan
 from app.scanner.fetcher import get_installation_token, _auth_headers, GITHUB_API
+from app.scanner.patches import verify_finding_patch
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-API_SECRET = os.environ.get("API_SECRET", "")
+API_SECRET = get_settings().api_secret
 
 # ── Simple in-memory rate limiter ─────────────────────────────────────────────
 _rate_buckets: dict[str, list[float]] = defaultdict(list)
@@ -37,6 +39,17 @@ def _to_utc_iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
+def _analysis_mode(status, summary: str | None) -> str:
+    text = summary or ""
+    if status == ScanStatus.failed:
+        return "error"
+    if "AI enrichment unavailable" in text or "validation was unavailable" in text:
+        return "degraded"
+    if text.startswith("AI-enhanced"):
+        return "ai_enhanced"
+    return "deterministic"
+
+
 def _check_rate_limit(key: str) -> None:
     now = time.time()
     bucket = _rate_buckets[key]
@@ -49,7 +62,7 @@ def _check_rate_limit(key: str) -> None:
 async def verify_api_auth(request: Request) -> None:
     """Verify requests come from the trusted frontend proxy."""
     if not API_SECRET:
-        return
+        raise HTTPException(status_code=503, detail="Backend API authentication is not configured")
     token = request.headers.get("X-API-Secret", "")
     if token != API_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden")
@@ -76,12 +89,18 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     if job is None:
         return JSONResponse({"status": "ignored"})
 
-    background_tasks.add_task(run_scan, job)
+    scan_id, created = enqueue_scan(job)
+    if created:
+        background_tasks.add_task(run_scan, scan_id, job)
     logger.info(
         "Queued scan for %s PR#%s sha=%s",
         job["repo_full_name"], job["pr_number"], job["head_sha"][:8],
     )
-    return JSONResponse({"status": "queued", "pr": job["pr_number"]})
+    return JSONResponse({
+        "status": "queued" if created else "already_queued",
+        "pr": job["pr_number"],
+        "scan_id": scan_id,
+    })
 
 
 @app.api_route("/", methods=["GET", "HEAD"])
@@ -120,6 +139,7 @@ async def list_all_scans(request: Request, owner: str | None = None, limit: int 
                 "status": r.status,
                 "verdict": r.verdict,
                 "summary": r.summary,
+                "analysis_mode": _analysis_mode(r.status, r.summary),
                 "created_at": _to_utc_iso(r.created_at),
             }
             for r in runs
@@ -142,8 +162,10 @@ async def get_findings(request: Request, scan_id: int, _auth=Depends(verify_api_
         if not run:
             raise HTTPException(status_code=404, detail="Scan not found")
         findings = db.query(ScanFinding).filter(ScanFinding.scan_run_id == scan_id).all()
-        return [
-            {
+        result = []
+        for f in findings:
+            agent_data = f.agent_data or {}
+            result.append({
                 "id": f.id,
                 "file": f.file,
                 "line": f.line,
@@ -155,9 +177,14 @@ async def get_findings(request: Request, scan_id: int, _auth=Depends(verify_api_
                 "patch_verified": f.patch_verified,
                 "fix_applied": f.fix_applied,
                 "fix_commit_sha": f.fix_commit_sha,
-            }
-            for f in findings
-        ]
+                "source": agent_data.get("source", "deterministic"),
+                "confidence": agent_data.get("confidence", "high"),
+                "fix_eligible": bool(agent_data.get("fix_eligible", False)),
+                "validation_notes": agent_data.get("validation_notes", []),
+                "remediation": agent_data.get("remediation"),
+                "reference": agent_data.get("reference"),
+            })
+        return result
     finally:
         db.close()
 
@@ -183,7 +210,62 @@ async def get_scan_meta(request: Request, scan_id: int, _auth=Depends(verify_api
             "status": run.status,
             "verdict": run.verdict,
             "summary": run.summary,
+            "analysis_mode": _analysis_mode(run.status, run.summary),
+            "retryable": run.status == ScanStatus.failed or _analysis_mode(run.status, run.summary) == "degraded",
             "created_at": _to_utc_iso(run.created_at),
+        }
+    finally:
+        db.close()
+
+
+@app.post("/scans/{scan_id}/retry")
+async def retry_scan(
+    request: Request,
+    scan_id: int,
+    background_tasks: BackgroundTasks,
+    _auth=Depends(verify_api_auth),
+):
+    """Queue an idempotent scan for the pull request's current head."""
+    _check_rate_limit(request.client.host if request.client else "unknown")
+    if scan_id < 1:
+        raise HTTPException(status_code=400, detail="Invalid scan ID")
+
+    import httpx
+    from app.database import SessionLocal
+    from app.models import ScanRun
+
+    db = SessionLocal()
+    try:
+        run = db.query(ScanRun).filter(ScanRun.id == scan_id).first()
+        if not run:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        try:
+            token = get_installation_token(run.installation_id)
+            response = httpx.get(
+                f"{GITHUB_API}/repos/{run.repo_full_name}/pulls/{run.pr_number}",
+                headers=_auth_headers(token),
+                timeout=15,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="Could not refresh pull request") from exc
+
+        pull = response.json()
+        job = {
+            "repo_full_name": run.repo_full_name,
+            "pr_number": run.pr_number,
+            "head_sha": pull["head"]["sha"],
+            "base_sha": pull["base"]["sha"],
+            "installation_id": run.installation_id,
+            "pr_url": pull["html_url"],
+        }
+        new_scan_id, created = enqueue_scan(job)
+        if created:
+            background_tasks.add_task(run_scan, new_scan_id, job)
+        return {
+            "status": "queued" if created else "already_queued",
+            "scan_id": new_scan_id,
+            "head_sha": job["head_sha"],
         }
     finally:
         db.close()
@@ -221,7 +303,11 @@ async def apply_fix(request: Request, scan_id: int, finding_id: int, _auth=Depen
             raise HTTPException(status_code=404, detail="Finding not found")
         if not finding.proposed_patch:
             raise HTTPException(status_code=400, detail="No patch available for this finding")
+        if finding.patch_verified != "approve":
+            raise HTTPException(status_code=409, detail="Fix has not passed mechanical verification")
         if finding.fix_applied:
+            if not finding.fix_commit_sha:
+                raise HTTPException(status_code=409, detail="Fix application is already in progress")
             return {
                 "status": "already_applied",
                 "commit_sha": finding.fix_commit_sha,
@@ -252,12 +338,15 @@ async def apply_fix(request: Request, scan_id: int, finding_id: int, _auth=Depen
             pr_resp.raise_for_status()
         except httpx.HTTPError:
             raise HTTPException(status_code=502, detail="Could not fetch PR info")
-        branch = pr_resp.json()["head"]["ref"]
+        pr_data = pr_resp.json()
+        if pr_data["head"]["sha"] != run.head_sha:
+            raise HTTPException(status_code=409, detail="Scan is stale; retry the scan on the latest commit")
+        branch = pr_data["head"]["ref"]
 
         try:
             file_resp = httpx.get(
                 f"{GITHUB_API}/repos/{run.repo_full_name}/contents/{finding.file}",
-                params={"ref": branch},
+                params={"ref": run.head_sha},
                 headers=headers,
                 timeout=15,
             )
@@ -277,9 +366,19 @@ async def apply_fix(request: Request, scan_id: int, finding_id: int, _auth=Depen
         except (ValueError, UnicodeDecodeError):
             raise HTTPException(status_code=422, detail="Could not decode file content")
 
-        patched = _apply_patch(original, finding.proposed_patch, finding.line)
-        if patched is None:
-            raise HTTPException(status_code=422, detail="Could not apply patch cleanly")
+        patch_check = verify_finding_patch(
+            original=original,
+            patch=finding.proposed_patch,
+            filename=finding.file,
+            rule=finding.rule,
+            severity=finding.severity,
+        )
+        if not patch_check.eligible or patch_check.patched is None:
+            raise HTTPException(
+                status_code=422,
+                detail=patch_check.notes[0] if patch_check.notes else "Could not verify patch",
+            )
+        patched = patch_check.patched
 
         try:
             commit_resp = httpx.put(
@@ -332,141 +431,6 @@ async def apply_fix(request: Request, scan_id: int, finding_id: int, _auth=Depen
         raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         db.close()
-
-
-def _apply_patch(original: str, patch: str, hint_line: int | None = None) -> str | None:
-    """
-    Apply a patch to original content.
-    Supports two formats:
-      1. Unified diff (lines prefixed with -/+)
-      2. Plain replacement block (just the corrected code)
-    """
-    if not patch or not patch.strip():
-        return None
-
-    patch_lines = patch.splitlines()
-    has_diff_headers = any(
-        l.startswith("---") or l.startswith("+++") or l.startswith("@@")
-        for l in patch_lines
-    )
-
-    removals: list[str] = []
-    additions: list[str] = []
-
-    if has_diff_headers:
-        for raw_line in patch_lines:
-            if raw_line.startswith("---") or raw_line.startswith("+++") or raw_line.startswith("@@"):
-                continue
-            if raw_line.startswith("-"):
-                removals.append(raw_line[1:].rstrip("\n"))
-            elif raw_line.startswith("+"):
-                additions.append(raw_line[1:].rstrip("\n"))
-
-        if removals or additions:
-            return _apply_unified_diff(original, removals, additions)
-
-    return _apply_replacement_block(original, patch, hint_line)
-
-
-def _apply_unified_diff(original: str, removals: list[str], additions: list[str]) -> str | None:
-    """Apply a parsed unified diff with explicit removals and additions."""
-    original_lines = [l.rstrip("\n") for l in original.splitlines(keepends=True)]
-
-    start_idx = -1
-    for i in range(len(original_lines) - len(removals) + 1):
-        if all(original_lines[i + j].strip() == removals[j].strip() for j in range(len(removals))):
-            start_idx = i
-            break
-
-    if start_idx == -1 and removals:
-        return None
-
-    if removals:
-        result = original_lines[:start_idx] + additions + original_lines[start_idx + len(removals):]
-    else:
-        result = original_lines + additions
-
-    return "\n".join(result) + "\n"
-
-
-def _apply_replacement_block(original: str, patch: str, hint_line: int | None) -> str | None:
-    """
-    Apply a plain replacement block by finding the matching code section
-    in the original file near the hinted line number.
-    Falls back to hint_line-based replacement if content matching fails.
-    """
-    original_lines = original.splitlines()
-    patch_lines = patch.strip().splitlines()
-
-    if not patch_lines:
-        return None
-
-    first_patch = patch_lines[0].strip()
-
-    best_start = -1
-    best_end = -1
-    best_distance = float("inf")
-
-    search_line = (hint_line or 1) - 1
-
-    for i in range(len(original_lines)):
-        if original_lines[i].strip() != first_patch:
-            continue
-
-        brace_depth = 0
-        block_end = i
-        for j in range(i, len(original_lines)):
-            line = original_lines[j].strip()
-            brace_depth += line.count("{") - line.count("}")
-            if brace_depth <= 0 and j > i:
-                block_end = j
-                break
-            block_end = j
-
-        distance = abs(i - search_line)
-        if distance < best_distance:
-            best_start = i
-            best_end = block_end
-            best_distance = distance
-
-    if best_start == -1:
-        for i in range(len(original_lines)):
-            stripped = original_lines[i].strip()
-            if any(tok in stripped for tok in first_patch.split()[:3] if len(tok) > 2):
-                brace_depth = 0
-                block_end = i
-                for j in range(i, len(original_lines)):
-                    line = original_lines[j].strip()
-                    brace_depth += line.count("{") - line.count("}")
-                    if brace_depth <= 0 and j > i:
-                        block_end = j
-                        break
-                    block_end = j
-
-                distance = abs(i - search_line)
-                if distance < best_distance:
-                    best_start = i
-                    best_end = block_end
-                    best_distance = distance
-
-    if best_start == -1 and hint_line and hint_line > 0:
-        idx = hint_line - 1
-        if idx < len(original_lines):
-            indent = len(original_lines[idx]) - len(original_lines[idx].lstrip())
-            end = idx
-            for j in range(idx, len(original_lines)):
-                line = original_lines[j]
-                if j > idx and line.strip() and (len(line) - len(line.lstrip())) <= indent:
-                    break
-                end = j
-            best_start = idx
-            best_end = end
-
-    if best_start == -1:
-        return None
-
-    result = original_lines[:best_start] + patch_lines + original_lines[best_end + 1:]
-    return "\n".join(result) + "\n"
 
 
 @app.get("/scans/{repo_owner}/{repo_name}")

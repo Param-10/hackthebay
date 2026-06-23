@@ -125,8 +125,10 @@ def main():
     # ── Step 2: Agent 1 – Reasoning ───────────────────────────────────────────
     print_separator("Step 2: Agent 1 – Security reasoning (Gemini)")
     print("Calling Gemini… ", end="", flush=True)
+    from app.agents.client import AIBudget
     from app.agents.reasoning import run_reasoning_agent
-    reasoning = run_reasoning_agent(files, det.findings)
+    budget = AIBudget(90)
+    reasoning, _ = run_reasoning_agent(files, det.findings, budget)
     print(f"done  overall_risk={reasoning.overall_risk}")
     print(f"\nSummary:\n  {reasoning.summary}")
     print(f"\nFindings ({len(reasoning.findings)}):")
@@ -152,7 +154,7 @@ def main():
     else:
         for fname, findings in by_file.items():
             print(f"Verifying {len(findings)} patch(es) for {fname}… ", end="", flush=True)
-            v_out = run_verification_agent(files.get(fname, ""), findings)
+            v_out, _ = run_verification_agent(files.get(fname, ""), findings, budget)
             all_verdicts.extend(v_out.verdicts)
             print("done")
 

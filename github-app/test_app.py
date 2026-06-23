@@ -181,10 +181,21 @@ permissions: write-all
 jobs: {}
 """
 
+GA_PULL_REQUEST_TARGET = """
+on:
+  pull_request_target:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+"""
+
 test("GA001 script injection detected",  lambda: assert_rule(github_actions.scan(".github/workflows/ci.yml", GA_INJECTION), "GA001"))
 test("GA004 unpinned action detected",   lambda: assert_rule(github_actions.scan(".github/workflows/ci.yml", GA_UNPINNED), "GA004"))
 test("GA004 pinned SHA not flagged",     lambda: assert_no_rule(github_actions.scan(".github/workflows/ci.yml", GA_PINNED), "GA004"))
 test("GA002 write-all detected",         lambda: assert_rule(github_actions.scan(".github/workflows/ci.yml", GA_WRITE_ALL), "GA002"))
+test("GA003 pull_request_target detected", lambda: assert_rule(github_actions.scan(".github/workflows/ci.yml", GA_PULL_REQUEST_TARGET), "GA003"))
 
 
 # ── File classifier ────────────────────────────────────────────────────────────
@@ -291,5 +302,4 @@ total  = len(results)
 print(f"Results: {passed}/{total} passed", "✓" if failed == 0 else f"  {failed} FAILED")
 if failed:
     sys.exit(1)
-
 

@@ -29,10 +29,15 @@ Polaris acts like that senior SRE, automatically. Install the GitHub App, open a
 
 1. **Parses** the PR diff and extracts modified IaC files
 2. **Scans** with deterministic rules for known anti-patterns
-3. **Reasons** with Gemini to map findings to CIS/SOC2 frameworks and generate exact code fixes
-4. **Reports** inline PR comments on the exact line of vulnerable code, with suggested fixes ready to commit
+3. **Reasons** with Gemini to enrich evidence-backed findings and propose exact code fixes
+4. **Verifies** every AI-only claim and patch before it can affect the pull request
+5. **Reports** inline findings on changed lines, with one-click commit enabled only for mechanically verified fixes
 
-The entire pipeline completes in seconds with zero manual effort from the developers.
+Gemini is an enhancement, not a single point of failure. If the provider times out, exhausts
+quota, or returns invalid output, Polaris completes the deterministic scan and reports the
+degraded mode explicitly instead of discarding valid results.
+
+The pipeline is time-bounded and always returns a truthful result, even when AI enrichment is unavailable.
 
 ## Key Features
 
@@ -42,21 +47,21 @@ The entire pipeline completes in seconds with zero manual effort from the develo
 - **One-Click Auto-Fix** — Approve a suggested fix from the dashboard and Polaris commits it directly to your PR branch with a full audit trail
 - **Security Dashboard** — Overview of all scans, findings by severity, and drill-down into individual scan results
 - **Multi-User Isolation** — Each user only sees scans for their own repositories
-- **Verified Patches** — A second AI agent verifies every proposed fix before presenting it
+- **Verified Patches** — AI review plus exact patch application, syntax, and rule-resolution gates protect one-click commits
 
 ## How It Works
 
 ```
 PR Opened → GitHub Webhook → FastAPI Backend → Deterministic Scan
-         → Gemini (Reasoning Agent) → Gemini (Verification Agent)
+         → Optional Gemini Enrichment → Evidence + Patch Verification
          → Inline PR Comments + Commit Status → Dashboard Updated
 ```
 
 1. A developer opens a PR containing infrastructure files
 2. GitHub sends a webhook to the Polaris backend
 3. The deterministic scanner checks for known patterns (open ports, hardcoded secrets, privileged containers, etc.)
-4. Gemini analyzes each finding, maps it to compliance frameworks, and writes minimal-diff code fixes
-5. A second Gemini agent reviews every patch to ensure it doesn't break existing functionality
+4. Gemini enriches detector-backed findings and may propose additional evidence-linked findings
+5. AI-only findings and proposed patches pass independent validation; provider failure falls back to deterministic results
 6. Results are posted as an inline PR review on GitHub and stored in the dashboard
 7. The developer can approve fixes with one click — Polaris commits directly to the PR branch
 
@@ -160,6 +165,11 @@ GITHUB_PRIVATE_KEY=/path/to/your/private-key.pem
 GITHUB_WEBHOOK_SECRET=your_webhook_secret
 GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-3-flash-preview
+GEMINI_FALLBACK_MODEL=gemini-2.5-flash
+GEMINI_TIMEOUT_SECONDS=30
+GEMINI_TOTAL_BUDGET_SECONDS=90
+GEMINI_REASONING_THINKING_LEVEL=medium
+GEMINI_VERIFICATION_THINKING_LEVEL=low
 API_SECRET=same_secret_used_in_frontend
 DATABASE_URL=sqlite:///./scans.db
 ```

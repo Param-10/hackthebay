@@ -1,0 +1,13 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unsafe
+spec:
+  template:
+    spec:
+      hostPID: true
+      containers:
+        - name: app
+          image: example/app:latest
+          securityContext:
+            privileged: true

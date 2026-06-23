@@ -22,11 +22,15 @@ def scan(filename: str, content: str) -> list[Finding]:
     findings: list[Finding] = []
     has_user_directive = False
     final_user_root = False
+    final_from_line = 1
 
     for i, line in enumerate(content.splitlines(), start=1):
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
+
+        if stripped.upper().startswith("FROM "):
+            final_from_line = i
 
         if _LATEST_FROM.match(stripped):
             findings.append(Finding(
@@ -92,7 +96,7 @@ def scan(filename: str, content: str) -> list[Finding]:
 
     if not has_user_directive or final_user_root:
         findings.append(Finding(
-            file=filename, severity="medium",
+            file=filename, line=final_from_line, severity="medium",
             rule="DF008: No non-root USER directive",
             explanation="Image runs as root by default; add a USER instruction to drop privileges.",
             raw_evidence="No USER <non-root> directive found",

@@ -79,6 +79,7 @@ def test_gemini_simple():
     assert result.status == "ok", f"Unexpected: {result}"
 
 def test_gemini_reasoning_agent():
+    from app.agents.client import AIBudget
     from app.agents.reasoning import run_reasoning_agent
     from app.scanner.schema import Finding
 
@@ -90,12 +91,13 @@ def test_gemini_reasoning_agent():
     )]
     files = {"main.tf": 'resource "aws_security_group_rule" "bad" {\n  cidr_blocks = ["0.0.0.0/0"]\n}'}
 
-    out = run_reasoning_agent(files, findings)
+    out, _ = run_reasoning_agent(files, findings, AIBudget(90))
     assert out.overall_risk in ("critical", "high", "medium", "low", "pass")
     assert len(out.findings) > 0
     assert out.summary
 
 def test_gemini_verification_agent():
+    from app.agents.client import AIBudget
     from app.agents.reasoning import ReasonedFinding
     from app.agents.verification import run_verification_agent
 
@@ -109,7 +111,7 @@ def test_gemini_verification_agent():
     )]
     original = 'resource "aws_security_group_rule" "bad" {\n  cidr_blocks = ["0.0.0.0/0"]\n}'
 
-    out = run_verification_agent(original, findings)
+    out, _ = run_verification_agent(original, findings, AIBudget(90))
     assert len(out.verdicts) == 1
     v = out.verdicts[0]
     assert v.final_recommendation in ("approve", "revise", "reject")

@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     # Gemini
     gemini_api_key: str
     gemini_model: str = "gemini-3-flash-preview"
+    gemini_fallback_model: str = "gemini-2.5-flash"
+    gemini_timeout_seconds: int = 30
+    gemini_total_budget_seconds: int = 90
+    gemini_reasoning_thinking_level: str = "medium"
+    gemini_verification_thinking_level: str = "low"
+    gemini_reasoning_max_output_tokens: int = 4096
+    gemini_verification_max_output_tokens: int = 3072
 
     # Frontend → backend shared auth secret
     api_secret: str = ""
