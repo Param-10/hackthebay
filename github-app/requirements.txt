@@ -7,5 +7,5 @@ sqlalchemy>=2.0.0
 psycopg[binary]>=3.2.0
 PyJWT>=2.8.0
 cryptography>=42.0.0          # RSA key support for PyJWT
-google-genai>=0.8.0
+google-genai==1.72.0
 pyyaml>=6.0.1

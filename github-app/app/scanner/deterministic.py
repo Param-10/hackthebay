@@ -6,6 +6,7 @@ import logging
 from app.scanner.schema import Finding, ScanResult
 from app.scanner.filters import FileType, classify
 from app.scanner.rules import terraform, kubernetes, dockerfile, github_actions
+from app.scanner.rule_metadata import add_rule_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ def run_deterministic(files: dict[str, str]) -> ScanResult:
         scanned.append(filename)
         try:
             findings = scanner(filename, content)
-            all_findings.extend(findings)
+            all_findings.extend(add_rule_metadata(finding) for finding in findings)
             logger.info("%s → %d finding(s) [%s]", filename, len(findings), ftype)
         except Exception:
             logger.exception("Deterministic scanner failed for %s", filename)

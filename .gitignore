@@ -32,5 +32,4 @@ dist/
 build/
 
 # Package manager
-package-lock.json
 pnpm-lock.yaml

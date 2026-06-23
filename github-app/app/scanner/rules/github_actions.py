@@ -1,4 +1,5 @@
 """Deterministic GitHub Actions workflow rules."""
+import copy
 import re
 import yaml
 from app.scanner.schema import Finding
@@ -10,6 +11,26 @@ _SCRIPT_INJECTION = re.compile(
 _PINNED_SHA = re.compile(r'@[0-9a-f]{40}$')
 _WRITE_ALL = re.compile(r'permissions:\s*write-all', re.IGNORECASE)
 _PULL_REQUEST_TARGET = re.compile(r'pull_request_target')
+
+
+class _WorkflowLoader(yaml.SafeLoader):
+    """YAML loader that keeps GitHub's `on` key as a string."""
+
+
+_WorkflowLoader.yaml_implicit_resolvers = copy.deepcopy(yaml.SafeLoader.yaml_implicit_resolvers)
+for _char, _resolvers in _WorkflowLoader.yaml_implicit_resolvers.items():
+    _WorkflowLoader.yaml_implicit_resolvers[_char] = [
+        item for item in _resolvers if item[0] != "tag:yaml.org,2002:bool"
+    ]
+_WorkflowLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool",
+    re.compile(r"^(?:true|false)$", re.IGNORECASE),
+    list("tTfF"),
+)
+
+
+def _line_containing(lines: list[str], needle: str) -> int | None:
+    return next((index for index, line in enumerate(lines, 1) if needle in line), None)
 
 
 def scan(filename: str, content: str) -> list[Finding]:
@@ -42,7 +63,7 @@ def scan(filename: str, content: str) -> list[Finding]:
 
     # YAML-level checks
     try:
-        doc = yaml.safe_load(content)
+        doc = yaml.load(content, Loader=_WorkflowLoader)
     except yaml.YAMLError:
         return findings
 
@@ -50,9 +71,17 @@ def scan(filename: str, content: str) -> list[Finding]:
         return findings
 
     # pull_request_target with checkout of head
-    if "pull_request_target" in (doc.get("on") or {}):
+    triggers = doc.get("on") or {}
+    has_pull_request_target = (
+        triggers == "pull_request_target"
+        or (isinstance(triggers, list) and "pull_request_target" in triggers)
+        or (isinstance(triggers, dict) and "pull_request_target" in triggers)
+    )
+    if has_pull_request_target:
         findings.append(Finding(
-            file=filename, severity="high",
+            file=filename,
+            line=_line_containing(lines, "pull_request_target"),
+            severity="high",
             rule="GA003: pull_request_target trigger",
             explanation=(
                 "`pull_request_target` runs in the context of the base branch with write tokens. "
@@ -75,7 +104,9 @@ def scan(filename: str, content: str) -> list[Finding]:
                 continue  # local or reusable, skip
             if not _PINNED_SHA.search(uses):
                 findings.append(Finding(
-                    file=filename, severity="medium",
+                    file=filename,
+                    line=_line_containing(lines, f"uses: {uses}"),
+                    severity="medium",
                     rule="GA004: Action not pinned to full SHA",
                     explanation=(
                         f"`{uses}` is not pinned to a commit SHA. "

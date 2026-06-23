@@ -22,15 +22,23 @@ SEVERITY_EMOJI = {
 }
 
 VERDICT_STATE = {
+    "pending":  "pending",
+    "error":    "error",
     "critical": "failure",
     "high":     "failure",
-    "medium":   "pending",   # warning maps to pending in GitHub status API
+    "medium":   "success",
     "low":      "success",
     "pass":     "success",
 }
 
 
-def _bot_already_reviewed(repo: str, pr_number: int, head_sha: str, token: str) -> bool:
+def _bot_already_reviewed(
+    repo: str,
+    pr_number: int,
+    head_sha: str,
+    token: str,
+    summary: str,
+) -> bool:
     """Check if the bot already posted a review on this exact commit."""
     try:
         resp = httpx.get(
@@ -48,7 +56,8 @@ def _bot_already_reviewed(repo: str, pr_number: int, head_sha: str, token: str) 
             # GitHub App bot reviews have user.type == "Bot"
             is_bot = user.get("type") == "Bot" and "[bot]" in user.get("login", "")
             same_commit = review.get("commit_id") == head_sha
-            if is_bot and same_commit:
+            same_summary = summary in (review.get("body") or "")
+            if is_bot and same_commit and same_summary:
                 logger.info(
                     "Bot already reviewed %s PR#%s at %s — skipping duplicate",
                     repo, pr_number, head_sha[:8],
@@ -70,7 +79,7 @@ def post_pr_review(
     """Post a PR review with inline comments and a summary body.
     Falls back to summary-only if inline comments reference stale lines.
     Skips if the bot already reviewed this commit."""
-    if _bot_already_reviewed(repo, pr_number, head_sha, token):
+    if _bot_already_reviewed(repo, pr_number, head_sha, token, reasoning.summary):
         return
     comments = _build_inline_comments(reasoning, verification)
     body = _build_summary_body(reasoning, verification)
@@ -80,7 +89,7 @@ def post_pr_review(
     payload = {
         "commit_id": head_sha,
         "body": body,
-        "event": _review_event(reasoning.overall_risk),
+        "event": _review_event(reasoning.overall_risk, reasoning.summary),
         "comments": comments,
     }
 
@@ -103,7 +112,7 @@ def post_pr_review(
         fallback_payload = {
             "commit_id": head_sha,
             "body": fallback_body,
-            "event": _review_event(reasoning.overall_risk),
+            "event": _review_event(reasoning.overall_risk, reasoning.summary),
             "comments": [],
         }
         try:
@@ -155,7 +164,9 @@ def post_commit_status(
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
-def _review_event(overall_risk: str) -> str:
+def _review_event(overall_risk: str, summary: str = "") -> str:
+    if "AI enrichment unavailable" in summary or "partial coverage" in summary:
+        return "COMMENT"
     if overall_risk in ("critical", "high"):
         return "REQUEST_CHANGES"
     if overall_risk in ("medium",):

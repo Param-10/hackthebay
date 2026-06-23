@@ -13,26 +13,30 @@ def scan(filename: str, content: str) -> list[Finding]:
     for doc in docs:
         if not isinstance(doc, dict):
             continue
-        _check_doc(filename, doc, findings)
+        _check_doc(filename, content.splitlines(), doc, findings)
 
     return findings
 
 
-def _check_doc(filename: str, doc: dict, findings: list[Finding]) -> None:
+def _line_containing(lines: list[str], needle: str, fallback: int = 1) -> int:
+    return next((index for index, line in enumerate(lines, 1) if needle in line), fallback)
+
+
+def _check_doc(filename: str, lines: list[str], doc: dict, findings: list[Finding]) -> None:
     kind = doc.get("kind", "")
     spec = doc.get("spec", {}) or {}
 
     # Pod-level host namespaces
     if spec.get("hostPID"):
         findings.append(Finding(
-            file=filename, severity="critical",
+            file=filename, line=_line_containing(lines, "hostPID:"), severity="critical",
             rule="K8S001: hostPID enabled",
             explanation="Sharing host PID namespace allows process inspection/escalation.",
             raw_evidence=f"kind={kind} hostPID=true",
         ))
     if spec.get("hostNetwork"):
         findings.append(Finding(
-            file=filename, severity="high",
+            file=filename, line=_line_containing(lines, "hostNetwork:"), severity="high",
             rule="K8S002: hostNetwork enabled",
             explanation="Container shares host network stack; risk of traffic interception.",
             raw_evidence=f"kind={kind} hostNetwork=true",
@@ -46,7 +50,7 @@ def _check_doc(filename: str, doc: dict, findings: list[Finding]) -> None:
 
         if sc.get("privileged"):
             findings.append(Finding(
-                file=filename, severity="critical",
+                file=filename, line=_line_containing(lines, "privileged:"), severity="critical",
                 rule="K8S003: Privileged container",
                 explanation=f"Container '{name}' runs privileged; equivalent to root on host.",
                 raw_evidence=f"container={name} privileged=true",
@@ -54,7 +58,9 @@ def _check_doc(filename: str, doc: dict, findings: list[Finding]) -> None:
 
         if sc.get("allowPrivilegeEscalation") is not False:
             findings.append(Finding(
-                file=filename, severity="medium",
+                file=filename,
+                line=_line_containing(lines, f"name: {name}"),
+                severity="medium",
                 rule="K8S004: allowPrivilegeEscalation not explicitly false",
                 explanation=f"Container '{name}' may escalate privileges via setuid binaries.",
                 raw_evidence=f"container={name} allowPrivilegeEscalation not set to false",
@@ -63,7 +69,7 @@ def _check_doc(filename: str, doc: dict, findings: list[Finding]) -> None:
         run_as = sc.get("runAsUser")
         if run_as == 0:
             findings.append(Finding(
-                file=filename, severity="high",
+                file=filename, line=_line_containing(lines, "runAsUser:"), severity="high",
                 rule="K8S005: Container runs as root (UID 0)",
                 explanation=f"Container '{name}' explicitly configured to run as root.",
                 raw_evidence=f"container={name} runAsUser=0",
@@ -71,7 +77,9 @@ def _check_doc(filename: str, doc: dict, findings: list[Finding]) -> None:
 
         if not resources.get("limits"):
             findings.append(Finding(
-                file=filename, severity="low",
+                file=filename,
+                line=_line_containing(lines, f"name: {name}"),
+                severity="low",
                 rule="K8S006: No resource limits",
                 explanation=f"Container '{name}' has no CPU/memory limits; risk of node exhaustion.",
                 raw_evidence=f"container={name} resources.limits missing",
@@ -80,7 +88,7 @@ def _check_doc(filename: str, doc: dict, findings: list[Finding]) -> None:
         image = c.get("image", "")
         if image.endswith(":latest") or (":" not in image and "@" not in image):
             findings.append(Finding(
-                file=filename, severity="medium",
+                file=filename, line=_line_containing(lines, f"image: {image}"), severity="medium",
                 rule="K8S007: Unpinned image tag",
                 explanation=f"Container '{name}' uses '{image}'; unpinned images break reproducibility.",
                 raw_evidence=f"container={name} image={image}",

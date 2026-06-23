@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 
 Severity = Literal["critical", "high", "medium", "low", "info"]
+Confidence = Literal["high", "medium"]
 
 
 class Finding(BaseModel):
@@ -16,6 +17,9 @@ class Finding(BaseModel):
     rule: str
     explanation: str
     raw_evidence: str
+    remediation: str = ""
+    reference: str | None = None
+    confidence: Confidence = "high"
 
 
 class ScanResult(BaseModel):

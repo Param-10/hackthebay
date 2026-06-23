@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback } from "react"
-import { useParams } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import {
   ArrowLeft,
@@ -28,6 +28,8 @@ interface ScanMeta {
   verdict: string | null
   summary: string | null
   created_at: string
+  analysis_mode: "ai_enhanced" | "deterministic" | "degraded" | "error"
+  retryable: boolean
 }
 
 interface Finding {
@@ -42,6 +44,12 @@ interface Finding {
   patch_verified: string | null
   fix_applied: boolean
   fix_commit_sha: string | null
+  source: "deterministic" | "ai_confirmed"
+  confidence: "high" | "medium"
+  fix_eligible: boolean
+  validation_notes: string[]
+  remediation: string | null
+  reference: string | null
 }
 
 type ApplyState = "idle" | "loading" | "applied" | "error"
@@ -148,11 +156,13 @@ function ApplyFixButton({
 
 export default function ScanDetailPage() {
   const params = useParams()
+  const router = useRouter()
   const scanId = params.id as string
   const [meta, setMeta] = useState<ScanMeta | null>(null)
   const [findings, setFindings] = useState<Finding[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [retrying, setRetrying] = useState(false)
   const [applyStates, setApplyStates] = useState<Record<number, ApplyState>>({})
   const now = useNow(30_000)
   const userTimeZone = getUserTimeZone()
@@ -231,6 +241,19 @@ export default function ScanDetailPage() {
     }
   }, [scanId])
 
+  const handleRetry = useCallback(async () => {
+    setRetrying(true)
+    try {
+      const response = await fetch(`/api/scans/${scanId}/retry`, { method: "POST" })
+      if (!response.ok) throw new Error("Retry failed")
+      const result = await response.json()
+      router.push(`/dashboard/scans/${result.scan_id}`)
+    } catch {
+      setError("Could not queue a new scan")
+      setRetrying(false)
+    }
+  }, [router, scanId])
+
   const criticalCount = findings.filter((f) => f.severity === "critical" || f.severity === "high").length
   const mediumCount = findings.filter((f) => f.severity === "medium").length
   const lowCount = findings.filter((f) => f.severity === "low" || f.severity === "info").length
@@ -274,22 +297,39 @@ export default function ScanDetailPage() {
           </div>
 
           {meta && (
-            <a
-              href={`https://github.com/${meta.repo_full_name}/pull/${meta.pr_number}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-md border border-border/60 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-            >
-              View PR <ExternalLink className="h-3 w-3" />
-            </a>
+            <div className="flex items-center gap-2">
+              {meta.retryable && (
+                <button
+                  onClick={handleRetry}
+                  disabled={retrying}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background disabled:opacity-50"
+                >
+                  {retrying ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+                  {retrying ? "Queueing..." : "Retry scan"}
+                </button>
+              )}
+              <a
+                href={`https://github.com/${meta.repo_full_name}/pull/${meta.pr_number}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-border/60 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              >
+                View PR <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
           )}
         </div>
       </div>
 
       {/* Scan summary */}
       {meta?.summary && (
-        <div className="mb-6 rounded-lg border border-border/60 bg-card p-4">
-          <p className="text-xs font-medium text-muted-foreground mb-1.5">Scan Summary</p>
+        <div className={`mb-6 rounded-lg border p-4 ${meta.analysis_mode === "degraded" ? "border-amber-200 bg-amber-50/40" : meta.analysis_mode === "error" ? "border-red-200 bg-red-50/40" : "border-border/60 bg-card"}`}>
+          <div className="mb-1.5 flex items-center justify-between">
+            <p className="text-xs font-medium text-muted-foreground">Scan Summary</p>
+            <span className="rounded-full border border-border/60 bg-background/70 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+              {meta.analysis_mode === "ai_enhanced" ? "AI enhanced" : meta.analysis_mode === "degraded" ? "Deterministic fallback" : meta.analysis_mode === "error" ? "Scanner error" : "Deterministic"}
+            </span>
+          </div>
           <p className="text-sm leading-relaxed text-foreground">{meta.summary}</p>
         </div>
       )}
@@ -365,6 +405,9 @@ export default function ScanDetailPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  <span className="rounded bg-muted/50 px-2 py-0.5 text-xs text-muted-foreground">
+                    {finding.source === "ai_confirmed" ? "AI confirmed" : "Detector backed"} · {finding.confidence} confidence
+                  </span>
                   <SeverityBadge severity={finding.severity} />
                   <span className="rounded bg-muted/50 px-2 py-0.5 font-mono text-xs text-muted-foreground">
                     {finding.rule}
@@ -387,6 +430,18 @@ export default function ScanDetailPage() {
                   </div>
                 )}
 
+                {finding.remediation && (
+                  <div className="mt-3 rounded-md border border-border/60 bg-muted/20 p-3">
+                    <p className="mb-1 text-xs font-medium text-muted-foreground">Recommended remediation</p>
+                    <p className="text-sm text-foreground">{finding.remediation}</p>
+                    {finding.reference && (
+                      <a href={finding.reference} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs text-muted-foreground underline underline-offset-2">
+                        Authoritative guidance <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                  </div>
+                )}
+
                 {finding.proposed_patch && (
                   <div className="mt-3">
                     <div className="mb-1.5 flex items-center justify-between">
@@ -400,14 +455,16 @@ export default function ScanDetailPage() {
                     {/* Apply Fix button */}
                     <div className="mt-3 flex items-center justify-between">
                       <p className="text-xs text-muted-foreground">
-                        Commits the fix directly to the PR branch.
+                        {finding.fix_eligible ? "Mechanically verified against the current file." : "Suggestion only — this patch did not pass every mechanical gate."}
                       </p>
-                      <ApplyFixButton
-                        scanId={scanId}
-                        findingId={finding.id}
-                        state={applyStates[finding.id] || "idle"}
-                        onApply={handleApplyFix}
-                      />
+                      {finding.fix_eligible && (
+                        <ApplyFixButton
+                          scanId={scanId}
+                          findingId={finding.id}
+                          state={applyStates[finding.id] || "idle"}
+                          onApply={handleApplyFix}
+                        />
+                      )}
                     </div>
                   </div>
                 )}
