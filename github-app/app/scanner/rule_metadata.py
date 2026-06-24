@@ -36,6 +36,11 @@ _REMEDIATIONS = {
     "GA002": "Declare only the specific read/write permissions required by each job.",
     "GA003": "Avoid executing pull-request head code with pull_request_target credentials.",
     "GA004": "Pin the action to a reviewed full-length commit SHA.",
+    "GA005": "Use npm trusted publishing with OIDC and prefer staged publishing for human approval.",
+}
+
+_RULE_REFERENCES = {
+    "GA005": "https://docs.npmjs.com/trusted-publishers/",
 }
 
 
@@ -44,5 +49,5 @@ def add_rule_metadata(finding: Finding) -> Finding:
     family = "".join(ch for ch in rule_id if ch.isalpha())
     return finding.model_copy(update={
         "remediation": _REMEDIATIONS.get(rule_id, "Review and restrict the insecure configuration."),
-        "reference": _FAMILY_REFERENCES.get(family),
+        "reference": _RULE_REFERENCES.get(rule_id, _FAMILY_REFERENCES.get(family)),
     })

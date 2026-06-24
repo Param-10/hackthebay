@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass, field
 
 import yaml
@@ -16,7 +17,8 @@ _DOCKER_INSTRUCTION = re.compile(
     r"^(ADD|ARG|CMD|COPY|ENTRYPOINT|ENV|EXPOSE|FROM|HEALTHCHECK|LABEL|MAINTAINER|ONBUILD|RUN|SHELL|STOPSIGNAL|USER|VOLUME|WORKDIR)\b",
     re.IGNORECASE,
 )
-_SEVERITY = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+_ACTION_REFERENCE = re.compile(r"\buses:\s*([^\s@]+)@([^\s#]+)", re.IGNORECASE)
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 
 
 @dataclass
@@ -163,9 +165,49 @@ def _syntax_valid(filename: str, content: str) -> tuple[bool, str]:
             return (not continuation, "Dockerfile instructions parsed")
         if file_type == FileType.terraform:
             return False, "Terraform fixes require a full HCL parser and are suggestion-only"
-    except yaml.YAMLError:
-        return False, "Patched YAML is invalid"
+    except yaml.YAMLError as exc:
+        return False, f"Patched YAML is invalid: {exc}"
     return False, "Unsupported file type"
+
+
+def _action_references(content: str) -> dict[str, set[str]]:
+    references: dict[str, set[str]] = {}
+    for action, reference in _ACTION_REFERENCE.findall(content):
+        references.setdefault(action.lower(), set()).add(reference)
+    return references
+
+
+def _weakens_action_pinning(original: str, patched: str) -> bool:
+    before = _action_references(original)
+    after = _action_references(patched)
+    for action, references in before.items():
+        if not any(_FULL_SHA.fullmatch(reference) for reference in references):
+            continue
+        patched_references = after.get(action, set())
+        if patched_references and any(
+            not _FULL_SHA.fullmatch(reference) for reference in patched_references
+        ):
+            return True
+    return False
+
+
+def _npm_publish_modes(content: str) -> set[str]:
+    modes: set[str] = set()
+    for raw in content.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("- run:"):
+            stripped = stripped[len("- run:"):].strip()
+        elif stripped.startswith("run:"):
+            stripped = stripped[len("run:"):].strip()
+        try:
+            tokens = shlex.split(stripped, comments=True, posix=True)
+        except ValueError:
+            continue
+        if tokens[:3] == ["npm", "stage", "publish"]:
+            modes.add("staged")
+        elif tokens[:2] == ["npm", "publish"]:
+            modes.add("direct")
+    return modes
 
 
 def verify_finding_patch(
@@ -182,7 +224,16 @@ def verify_finding_patch(
 
     syntax_ok, syntax_note = _syntax_valid(filename, patched)
     if not syntax_ok:
+        if "duplicate key" in syntax_note.lower():
+            return PatchCheck(False, notes=["Patched YAML contains a duplicate key"])
         return PatchCheck(False, notes=[syntax_note])
+
+    if _weakens_action_pinning(original, patched):
+        return PatchCheck(False, notes=["Patch replaces an immutable action SHA with a mutable reference"])
+    before_publish = _npm_publish_modes(original)
+    after_publish = _npm_publish_modes(patched)
+    if "staged" in before_publish and "direct" in after_publish:
+        return PatchCheck(False, notes=["Patch removes the staged-publishing human approval boundary"])
 
     before = run_deterministic({filename: original}).findings
     after = run_deterministic({filename: patched}).findings
@@ -191,11 +242,9 @@ def verify_finding_patch(
         return PatchCheck(False, notes=["Patch does not remove the targeted deterministic finding"])
 
     before_ids = {item.rule.split(":", 1)[0] for item in before}
-    threshold = _SEVERITY.get(severity, 0)
     introduced = [
         item.rule for item in after
         if item.rule.split(":", 1)[0] not in before_ids
-        and _SEVERITY.get(item.severity, 0) >= threshold
     ]
     if introduced:
         return PatchCheck(False, notes=[f"Patch introduces: {', '.join(introduced)}"])

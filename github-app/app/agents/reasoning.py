@@ -71,6 +71,11 @@ or any other tool/package as a security issue unless there is a KNOWN CVE you ca
 overly permissive permissions, missing encryption, unsafe defaults, injection vectors, etc.
 5. If a deterministic finding is clearly a false positive based on the file content, you may \
 omit it from your output rather than propagating it.
+6. A full-length 40-character GitHub Action SHA is immutable. Never call its release outdated, \
+old, or vulnerable without an authoritative advisory resolver result supplied in the input. \
+No such external result is supplied here.
+7. `npm stage publish` stages a non-public artifact for later human approval; it is not direct \
+`npm publish`. Never recommend replacing staged publishing with direct publishing.
 
 Respond ONLY with valid JSON matching the schema provided. No markdown fences.
 """

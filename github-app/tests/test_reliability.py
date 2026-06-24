@@ -16,14 +16,14 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 from pydantic import BaseModel
 
 from app.agents.client import AIBudget, AIProviderError, _classify_error, generate_structured
-from app.agents.reasoning import ReasonedFinding, _SYSTEM as REASONING_SYSTEM, _build_user_message
+from app.agents.reasoning import ReasonedFinding, ReasoningOutput, _SYSTEM as REASONING_SYSTEM, _build_user_message
 from app.agents.safety import redact_sensitive_text
 from app.models import FinalVerdict, ScanStatus
 from app.scanner.diff import changed_line_context, changed_lines_from_patch
 from app.scanner.deterministic import run_deterministic
 from app.scanner.patches import apply_unified_diff, deterministic_patch_for, verify_finding_patch
 from app.scanner.rules.github_actions import scan as scan_actions
-from app.scanner.worker import _dedupe_findings, _execute, _valid_ai_candidate
+from app.scanner.worker import _approved_ai_finding, _dedupe_findings, _execute, _valid_ai_candidate
 from app.scanner.worker import enqueue_scan
 
 
@@ -195,6 +195,24 @@ type: Opaque
         )
         self.assertEqual(_dedupe_findings([finding, finding.model_copy()]), [finding])
 
+    def test_rejected_reviewer_verdict_cannot_accept_ai_only_finding(self):
+        from app.agents.verification import PatchVerdict
+
+        verdict = PatchVerdict(
+            rule="Outdated GitHub Action",
+            file=".github/workflows/release.yml",
+            line=1,
+            patch_valid=False,
+            patch_minimal=False,
+            patch_safe=False,
+            issues=["Remediation weakens immutable pinning"],
+            final_recommendation="reject",
+            reviewer_note="Reject",
+            finding_valid=True,
+            evidence_valid=True,
+        )
+        self.assertFalse(_approved_ai_finding(verdict))
+
     def test_multi_document_kubernetes_is_scanned(self):
         content = """apiVersion: v1
 kind: Pod
@@ -255,6 +273,40 @@ spec:
             )
         )
 
+    def test_ai_candidate_rejects_unresolved_action_freshness_claim(self):
+        filename = ".github/workflows/release.yml"
+        content = (
+            "uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0\n"
+        )
+        candidate = ReasonedFinding(
+            file=filename,
+            line=1,
+            severity="high",
+            rule="Outdated GitHub Action",
+            explanation="This is an outdated version and newer versions contain security fixes.",
+            risk_context="Threat: old action. Impact: build compromise.",
+            proposed_patch=None,
+            patch_explanation=None,
+            evidence=content.strip(),
+        )
+        self.assertFalse(_valid_ai_candidate(candidate, {filename: content}, {filename: {1}}))
+
+    def test_ai_candidate_distinguishes_staged_from_direct_npm_publish(self):
+        filename = ".github/workflows/release.yml"
+        content = "run: npm stage publish --access public\n"
+        candidate = ReasonedFinding(
+            file=filename,
+            line=1,
+            severity="high",
+            rule="Insecure npm publish",
+            explanation="This command directly publishes a package.",
+            risk_context="Threat: package compromise. Impact: supply-chain attack.",
+            proposed_patch=None,
+            patch_explanation=None,
+            evidence=content.strip(),
+        )
+        self.assertFalse(_valid_ai_candidate(candidate, {filename: content}, {filename: {1}}))
+
     def test_exact_unified_diff_is_required(self):
         original = (
             "name: CI\non: [pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n"
@@ -281,6 +333,176 @@ spec:
         self.assertIsNone(
             apply_unified_diff(original, "uses: actions/checkout@sha", ".github/workflows/ci.yml")
         )
+
+    def test_patch_cannot_replace_immutable_action_sha_with_mutable_tag(self):
+        filename = ".github/workflows/release.yml"
+        original = "steps:\n  - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e\n"
+        patch_text = """--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -2 +2 @@
+-  - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
++  - uses: actions/setup-node@v4
+"""
+        check = verify_finding_patch(
+            original=original,
+            patch=patch_text,
+            filename=filename,
+            rule="AI001: Outdated action",
+            severity="high",
+        )
+        self.assertFalse(check.eligible)
+        self.assertIn("immutable", check.notes[0].lower())
+
+    def test_patch_cannot_replace_staged_with_direct_publish(self):
+        filename = ".github/workflows/release.yml"
+        original = "jobs:\n  release:\n    steps:\n      - run: npm stage publish --access public\n"
+        patch_text = """--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -4 +4 @@
+-      - run: npm stage publish --access public
++      - run: npm publish --access public
+"""
+        check = verify_finding_patch(
+            original=original,
+            patch=patch_text,
+            filename=filename,
+            rule="AI002: Insecure npm publish",
+            severity="high",
+        )
+        self.assertFalse(check.eligible)
+        self.assertIn("approval", check.notes[0].lower())
+
+    def test_patch_with_duplicate_yaml_keys_is_rejected(self):
+        filename = ".github/workflows/release.yml"
+        original = "jobs:\n  release:\n    steps:\n      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e\n"
+        patch_text = """--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -4 +4,2 @@
+-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
++      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
++        uses: actions/setup-node@v4
+"""
+        check = verify_finding_patch(
+            original=original,
+            patch=patch_text,
+            filename=filename,
+            rule="AI001: Outdated action",
+            severity="high",
+        )
+        self.assertFalse(check.eligible)
+        self.assertIn("duplicate", check.notes[0].lower())
+
+    def test_direct_npm_publish_with_long_lived_token_is_detected_but_stage_is_not(self):
+        direct = """on: [workflow_dispatch]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+"""
+        staged = direct.replace("npm publish", "npm stage publish")
+        direct_findings = scan_actions(".github/workflows/release.yml", direct)
+        staged_findings = scan_actions(".github/workflows/release.yml", staged)
+        self.assertTrue(any(item.rule.startswith("GA005") for item in direct_findings))
+        self.assertFalse(any(item.rule.startswith("GA005") for item in staged_findings))
+        echoed = direct.replace("run: npm publish", "run: echo npm publish")
+        self.assertFalse(any(
+            item.rule.startswith("GA005")
+            for item in scan_actions(".github/workflows/release.yml", echoed)
+        ))
+
+    @patch("app.scanner.worker.post_commit_status")
+    @patch("app.scanner.worker.post_pr_review")
+    @patch("app.scanner.worker.run_verification_agent")
+    @patch("app.scanner.worker.run_reasoning_agent")
+    @patch("app.scanner.worker.get_file_content")
+    @patch("app.scanner.worker.list_pr_files")
+    @patch("app.scanner.worker.get_installation_token")
+    def test_release_workflow_false_positives_are_not_accepted(
+        self,
+        get_token,
+        list_files,
+        get_content,
+        reasoning,
+        verification,
+        _post_review,
+        _post_status,
+    ):
+        filename = ".github/workflows/release.yml"
+        content = """name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.17.0
+          registry-url: https://registry.npmjs.org
+      - name: Verify tag matches CLI version
+        run: |
+          VERSION=$(node -p "require('./packages/cli/package.json').version")
+          test "${GITHUB_REF#refs/tags/}" = "v$VERSION"
+      - name: Stage npm publish
+        working-directory: packages/cli
+        run: npm stage publish --access public
+"""
+        lines = content.splitlines()
+        action_line = next(i for i, line in enumerate(lines, 1) if "actions/setup-node@" in line)
+        stage_line = next(i for i, line in enumerate(lines, 1) if "npm stage publish" in line)
+        candidates = [
+            ReasonedFinding(
+                file=filename,
+                line=action_line,
+                severity="high",
+                rule="Outdated GitHub Action",
+                explanation="The pinned action is outdated and newer versions contain security fixes.",
+                risk_context="Threat: action compromise. Impact: build compromise.",
+                proposed_patch=None,
+                patch_explanation=None,
+                evidence=lines[action_line - 1].strip(),
+            ),
+            ReasonedFinding(
+                file=filename,
+                line=stage_line,
+                severity="high",
+                rule="Insecure npm publish",
+                explanation="This directly publishes without an approval boundary.",
+                risk_context="Threat: package compromise. Impact: supply-chain attack.",
+                proposed_patch=None,
+                patch_explanation=None,
+                evidence=lines[stage_line - 1].strip(),
+            ),
+        ]
+        get_token.return_value = "token"
+        list_files.return_value = [{"filename": filename, "status": "added", "patch": None}]
+        get_content.return_value = content
+        reasoning.return_value = (
+            ReasoningOutput(overall_risk="high", summary="Two high findings", findings=candidates),
+            "gemini-test",
+        )
+        scan_run = SimpleNamespace(id=9, status=ScanStatus.running, verdict=None, summary=None)
+        db = MagicMock()
+
+        _execute({
+            "repo_full_name": "Param-10/pr-nutrition",
+            "pr_number": 8,
+            "head_sha": "release-head",
+            "installation_id": 1,
+        }, scan_run, db)
+
+        self.assertEqual(scan_run.verdict, FinalVerdict.pass_)
+        self.assertIn("0 accepted finding(s)", scan_run.summary)
+        verification.assert_not_called()
+        db.add.assert_not_called()
 
     def test_terraform_patch_is_suggestion_only_without_parser(self):
         patch_text = """--- a/main.tf
