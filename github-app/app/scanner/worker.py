@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from collections import defaultdict
 
@@ -29,6 +30,16 @@ _FORBIDDEN_AI_CLAIMS = (
     "invalid version",
     "lockfile",
 )
+_UNRESOLVED_ACTION_FRESHNESS = (
+    "outdated",
+    "older version",
+    "newer version",
+    "latest version",
+    "update to the latest",
+    "upgrade to the latest",
+)
+_FULL_ACTION_SHA = re.compile(r"\buses:\s*[^\s@]+@[0-9a-f]{40}\b", re.IGNORECASE)
+_NPM_STAGE_PUBLISH = re.compile(r"\bnpm\s+stage\s+publish\b", re.IGNORECASE)
 _ENQUEUE_LOCK = threading.Lock()
 
 
@@ -145,7 +156,25 @@ def _valid_ai_candidate(
     if not evidence or evidence not in redact_sensitive_text(file_contents[finding.file]):
         return False
     claim = f"{finding.rule} {finding.explanation}".lower()
-    return not any(term in claim for term in _FORBIDDEN_AI_CLAIMS)
+    if any(term in claim for term in _FORBIDDEN_AI_CLAIMS):
+        return False
+    if _FULL_ACTION_SHA.search(evidence) and any(
+        term in claim for term in _UNRESOLVED_ACTION_FRESHNESS
+    ):
+        return False
+    if _NPM_STAGE_PUBLISH.search(evidence):
+        return False
+    return True
+
+
+def _approved_ai_finding(verdict: PatchVerdict | None) -> bool:
+    """AI-only findings are accepted only after an unqualified reviewer approval."""
+    return bool(
+        verdict
+        and verdict.finding_valid
+        and verdict.evidence_valid
+        and verdict.final_recommendation == "approve"
+    )
 
 
 def _risk_for(findings: list[ReasonedFinding]) -> str:
@@ -284,7 +313,7 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
         for candidate in additional:
             key = _finding_key(candidate.file, candidate.rule, candidate.line)
             verdict = patch_verdicts.get(key)
-            if verdict and verdict.finding_valid and verdict.evidence_valid:
+            if _approved_ai_finding(verdict):
                 merged[key] = candidate
                 validation_notes[key].append("AI-only finding passed evidence review")
             else:

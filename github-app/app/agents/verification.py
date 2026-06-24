@@ -61,6 +61,13 @@ verified by an LLM. These are false positives caused by training data cutoffs.
 Also reject findings about lockfiles (pnpm-lock.yaml, yarn.lock, package-lock.json) — \
 these are machine-generated and not infrastructure-as-code.
 
+Reject findings that call a full-length GitHub Action SHA outdated, old, or vulnerable without \
+an authoritative advisory supplied in the input. Reject remediations that replace a full SHA \
+with a mutable tag. `npm stage publish` stages a non-public artifact for later human approval; \
+reject any finding that describes it as direct publishing, and reject any remediation that \
+replaces it with `npm publish`. For these contradictions, set finding_valid=false and \
+final_recommendation="reject".
+
 Respond ONLY with valid JSON matching the schema. No markdown fences.
 """
 

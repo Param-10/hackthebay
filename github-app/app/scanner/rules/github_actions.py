@@ -1,7 +1,9 @@
 """Deterministic GitHub Actions workflow rules."""
 import copy
 import re
+import shlex
 import yaml
+from yaml.constructor import ConstructorError
 from app.scanner.schema import Finding
 
 
@@ -27,6 +29,52 @@ _WorkflowLoader.add_implicit_resolver(
     re.compile(r"^(?:true|false)$", re.IGNORECASE),
     list("tTfF"),
 )
+
+
+def _construct_unique_mapping(loader, node, deep=False):
+    loader.flatten_mapping(node)
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_WorkflowLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+def _npm_publish_mode(command: object) -> str | None:
+    """Classify actual npm publish commands without substring matching."""
+    for raw in str(command or "").splitlines():
+        try:
+            tokens = shlex.split(raw.strip(), comments=True, posix=True)
+        except ValueError:
+            continue
+        if tokens[:3] == ["npm", "stage", "publish"]:
+            return "staged"
+        if tokens[:2] == ["npm", "publish"]:
+            return "direct"
+    return None
+
+
+def _has_long_lived_publish_token(*environments) -> bool:
+    for environment in environments:
+        if not isinstance(environment, dict):
+            continue
+        for key, value in environment.items():
+            if str(key).upper() in {"NODE_AUTH_TOKEN", "NPM_TOKEN"} and "secrets." in str(value):
+                return True
+    return False
 
 
 def _line_containing(lines: list[str], needle: str) -> int | None:
@@ -92,14 +140,38 @@ def scan(filename: str, content: str) -> list[Finding]:
 
     # Unpinned third-party actions
     jobs = doc.get("jobs", {}) or {}
+    workflow_env = doc.get("env", {}) or {}
     for job_name, job in jobs.items():
         if not isinstance(job, dict):
             continue
         steps = job.get("steps") or []
+        job_env = job.get("env", {}) or {}
         for step in steps:
             if not isinstance(step, dict):
                 continue
-            uses = step.get("uses", "")
+            run = step.get("run", "")
+            if _npm_publish_mode(run) == "direct" and _has_long_lived_publish_token(
+                workflow_env,
+                job_env,
+                step.get("env", {}),
+            ):
+                command = next(
+                    (line.strip() for line in str(run).splitlines() if _npm_publish_mode(line) == "direct"),
+                    "npm publish",
+                )
+                findings.append(Finding(
+                    file=filename,
+                    line=_line_containing(lines, command),
+                    severity="high",
+                    rule="GA005: Direct npm publish with long-lived token",
+                    explanation=(
+                        "Direct publication uses a repository secret instead of a scoped OIDC "
+                        "trusted-publisher identity and human-approved staged publishing."
+                    ),
+                    raw_evidence=command[:200],
+                ))
+
+            uses = str(step.get("uses", "") or "")
             if not uses or uses.startswith("."):
                 continue  # local or reusable, skip
             if not _PINNED_SHA.search(uses):
