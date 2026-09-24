@@ -104,9 +104,26 @@ def run_scan(scan_run_id: int, owner: str) -> None:
 
 def run_claimed_process(claimed, stop: threading.Event) -> None:
     # A stuck SDK call cannot block the queue forever or outlive its lease.
-    process = multiprocessing.get_context("spawn").Process(target=run_scan, args=claimed)
-    process.start()
     deadline = time.monotonic() + LEASE_SECONDS - 5
+    try:
+        process = multiprocessing.get_context("spawn").Process(target=run_scan, args=claimed)
+    except Exception:
+        retry_or_fail(*claimed, reason="PROCESS_CREATE_FAILED")
+        return
+    try:
+        process.start()
+    except Exception:
+        try:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2)
+        finally:
+            try:
+                process.close()
+            except Exception:
+                pass
+        retry_or_fail(*claimed, reason="PROCESS_START_FAILED")
+        return
     try:
         while process.is_alive() and not stop.is_set() and time.monotonic() < deadline:
             process.join(timeout=0.25)

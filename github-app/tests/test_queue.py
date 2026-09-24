@@ -272,6 +272,28 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(self.get(claimed[0]).status, ScanStatus.pending)
         self.assertIn("SCAN_TIMEOUT", self.get(claimed[0]).summary)
 
+    def test_process_start_failure_requeues_scan(self):
+        queue.enqueue_scan(JOB)
+        claimed = queue.claim_scan()
+        process = MagicMock()
+        process.start.side_effect = OSError("boom")
+        with patch.object(worker.multiprocessing, "get_context") as context:
+            context.return_value.Process.return_value = process
+            worker.run_claimed_process(claimed, threading.Event())
+        self.assertEqual(self.get(claimed[0]).status, ScanStatus.pending)
+        self.assertIn("PROCESS_START_FAILED", self.get(claimed[0]).summary)
+        self.assertIsNone(self.get(claimed[0]).worker_id)
+
+    def test_process_creation_failure_requeues_scan(self):
+        queue.enqueue_scan(JOB)
+        claimed = queue.claim_scan()
+        with patch.object(worker.multiprocessing, "get_context") as context:
+            context.return_value.Process.side_effect = OSError("spawn unavailable")
+            worker.run_claimed_process(claimed, threading.Event())
+        self.assertEqual(self.get(claimed[0]).status, ScanStatus.pending)
+        self.assertIn("PROCESS_CREATE_FAILED", self.get(claimed[0]).summary)
+        self.assertIsNone(self.get(claimed[0]).worker_id)
+
     def test_webhook_only_persists_work_and_duplicate_is_noop(self):
         from fastapi.testclient import TestClient
         import app.main as main
