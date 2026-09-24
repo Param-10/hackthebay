@@ -5,14 +5,15 @@ import time
 from datetime import datetime, timezone
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, BackgroundTasks, Request, HTTPException, Depends
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
 
 from app.database import init_db
 from app.config import get_settings
 from app.models import ScanStatus
 from app.webhook import parse_pr_event
-from app.scanner.worker import enqueue_scan, run_scan
+from app.scanner.queue import enqueue_scan
+from app.scanner.worker import start_worker, stop_worker
 from app.scanner.fetcher import get_installation_token, _auth_headers, GITHUB_API
 from app.scanner.patches import verify_finding_patch
 
@@ -72,26 +73,28 @@ async def verify_api_auth(request: Request) -> None:
 async def lifespan(app: FastAPI):
     init_db()
     logger.info("Database initialised")
-    yield
+    handle = start_worker()
+    try:
+        yield
+    finally:
+        stop_worker(handle)
 
 
 app = FastAPI(title="IaC Security Scanner", lifespan=lifespan, docs_url=None, redoc_url=None)
 
 
 @app.post("/webhook")
-async def github_webhook(request: Request, background_tasks: BackgroundTasks):
+async def github_webhook(request: Request):
     """
     Entry point for GitHub App webhooks.
     Verifies signature, filters for PR events on infra files,
-    then kicks off a background scan job.
+    then durably queues a scan for the polling worker.
     """
     job = await parse_pr_event(request)
     if job is None:
         return JSONResponse({"status": "ignored"})
 
     scan_id, created = enqueue_scan(job)
-    if created:
-        background_tasks.add_task(run_scan, scan_id, job)
     logger.info(
         "Queued scan for %s PR#%s sha=%s",
         job["repo_full_name"], job["pr_number"], job["head_sha"][:8],
@@ -222,7 +225,6 @@ async def get_scan_meta(request: Request, scan_id: int, _auth=Depends(verify_api
 async def retry_scan(
     request: Request,
     scan_id: int,
-    background_tasks: BackgroundTasks,
     _auth=Depends(verify_api_auth),
 ):
     """Queue an idempotent scan for the pull request's current head."""
@@ -259,9 +261,7 @@ async def retry_scan(
             "installation_id": run.installation_id,
             "pr_url": pull["html_url"],
         }
-        new_scan_id, created = enqueue_scan(job)
-        if created:
-            background_tasks.add_task(run_scan, new_scan_id, job)
+        new_scan_id, created = enqueue_scan(job, retry=True)
         return {
             "status": "queued" if created else "already_queued",
             "scan_id": new_scan_id,

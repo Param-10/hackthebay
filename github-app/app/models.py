@@ -2,6 +2,7 @@ import enum
 from datetime import datetime, timezone
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Enum as SAEnum, JSON, ForeignKey, Boolean,
+    Index,
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -22,6 +23,9 @@ class FinalVerdict(str, enum.Enum):
 
 class ScanRun(Base):
     __tablename__ = "scan_runs"
+    __table_args__ = (
+        Index("uq_scan_dedupe_key", "dedupe_key", unique=True),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     repo_full_name = Column(String, nullable=False, index=True)
@@ -37,6 +41,12 @@ class ScanRun(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+    # Only the latest run for a head owns its key; historical retries keep NULL.
+    dedupe_key = Column(String, nullable=True)
+    locked_until = Column(DateTime, nullable=True)
+    worker_id = Column(String, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    available_at = Column(DateTime, nullable=True)
 
     findings = relationship("ScanFinding", back_populates="scan_run", cascade="all, delete-orphan")
 

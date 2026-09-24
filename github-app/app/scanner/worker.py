@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import re
 import threading
+import time
 from collections import defaultdict
 
 from app.agents.client import AIBudget, AIProviderError
@@ -12,6 +14,9 @@ from app.agents.safety import redact_sensitive_text
 from app.agents.verification import PatchVerdict, VerificationOutput, run_verification_agent
 from app.config import get_settings
 from app.database import SessionLocal
+from app.scanner.queue import (
+    LEASE_SECONDS, LeaseLost, assert_owned, claim_scan, enqueue_scan, fence_result, retry_or_fail,
+)
 from app.models import FinalVerdict, ScanFinding, ScanRun, ScanStatus
 from app.reporter import post_commit_status, post_pr_review
 from app.scanner.deterministic import run_deterministic
@@ -40,76 +45,107 @@ _UNRESOLVED_ACTION_FRESHNESS = (
 )
 _FULL_ACTION_SHA = re.compile(r"\buses:\s*[^\s@]+@[0-9a-f]{40}\b", re.IGNORECASE)
 _NPM_STAGE_PUBLISH = re.compile(r"\bnpm\s+stage\s+publish\b", re.IGNORECASE)
-_ENQUEUE_LOCK = threading.Lock()
+
+def _check_lease(scan_run) -> None:
+    owner = getattr(scan_run, "worker_id", None)
+    if owner is not None:
+        assert_owned(scan_run.id, owner)
 
 
-def enqueue_scan(job: dict) -> tuple[int, bool]:
-    """Create one pending scan per repo/PR/head and return (id, created)."""
-    with _ENQUEUE_LOCK:
-        db = SessionLocal()
-        try:
-            existing = (
-                db.query(ScanRun)
-                .filter(
-                    ScanRun.repo_full_name == job["repo_full_name"],
-                    ScanRun.pr_number == job["pr_number"],
-                    ScanRun.head_sha == job["head_sha"],
-                    ScanRun.status.in_([ScanStatus.pending, ScanStatus.running]),
-                )
-                .order_by(ScanRun.created_at.desc())
-                .first()
-            )
-            if existing:
-                return existing.id, False
-            run = ScanRun(
-                repo_full_name=job["repo_full_name"],
-                pr_number=job["pr_number"],
-                head_sha=job["head_sha"],
-                installation_id=job["installation_id"],
-                status=ScanStatus.pending,
-            )
-            db.add(run)
-            db.commit()
-            db.refresh(run)
-            return run.id, True
-        finally:
-            db.close()
-
-
-def run_scan(scan_run_id: int, job: dict) -> None:
-    repo = job["repo_full_name"]
-    pr_number = job["pr_number"]
-    head_sha = job["head_sha"]
-    install_id = job["installation_id"]
-    db = SessionLocal()
-    scan_run = db.query(ScanRun).filter(ScanRun.id == scan_run_id).first()
-    if not scan_run:
-        db.close()
-        logger.error("Queued scan %s no longer exists", scan_run_id)
-        return
-
-    scan_run.status = ScanStatus.running
+def _commit_result(scan_run, db, verdict, summary) -> None:
+    fence_result(db, scan_run)
+    scan_run.status = ScanStatus.completed
+    scan_run.verdict = verdict
+    scan_run.summary = summary
+    scan_run.locked_until = None
     db.commit()
+
+
+def run_scan(scan_run_id: int, owner: str) -> None:
+    """Execute only a claimed job, reconstructing its input from durable state."""
+    db = SessionLocal()
     try:
+        scan_run = db.get(ScanRun, scan_run_id)
+        if scan_run is None or scan_run.worker_id != owner:
+            return
+        _check_lease(scan_run)
+        job = {
+            "repo_full_name": scan_run.repo_full_name,
+            "pr_number": scan_run.pr_number,
+            "head_sha": scan_run.head_sha,
+            "installation_id": scan_run.installation_id,
+        }
         try:
-            token = get_installation_token(install_id)
-            post_commit_status(repo, head_sha, token, "pending", "Polaris security scan is running.")
+            token = get_installation_token(job["installation_id"])
+            _check_lease(scan_run)
+            post_commit_status(job["repo_full_name"], job["head_sha"], token,
+                               "pending", "Polaris security scan is running.")
+        except LeaseLost:
+            raise
         except Exception:
-            logger.exception("Failed to post pending status for %s PR#%s", repo, pr_number)
+            logger.exception("Failed to post pending status for scan %s", scan_run_id)
         _execute(job, scan_run, db)
-    except Exception as exc:
-        logger.exception("Operational scan failure for %s PR#%s", repo, pr_number)
-        scan_run.status = ScanStatus.failed
-        scan_run.verdict = FinalVerdict.fail
-        scan_run.summary = "Scan error (SCANNER_INTERNAL). Review service logs and retry."
-        db.commit()
-        try:
-            token = get_installation_token(install_id)
-            post_commit_status(repo, head_sha, token, "error", scan_run.summary)
-        except Exception:
-            logger.exception("Failed to post scan error status for %s PR#%s", repo, pr_number)
+    except LeaseLost:
+        db.rollback()
+        logger.warning("Abandoned expired scan attempt %s", scan_run_id)
+    except Exception:
+        db.rollback()
+        logger.exception("Operational scan failure for scan %s", scan_run_id)
+        if retry_or_fail(scan_run_id, owner):
+            try:
+                token = get_installation_token(job["installation_id"])
+                post_commit_status(job["repo_full_name"], job["head_sha"], token, "error",
+                                   "Scan failed after 3 attempts (SCANNER_INTERNAL). Retry manually.")
+            except Exception:
+                logger.exception("Failed to report terminal error for scan %s", scan_run_id)
     finally:
         db.close()
+
+
+def run_claimed_process(claimed, stop: threading.Event) -> None:
+    # A stuck SDK call cannot block the queue forever or outlive its lease.
+    process = multiprocessing.get_context("spawn").Process(target=run_scan, args=claimed)
+    process.start()
+    deadline = time.monotonic() + LEASE_SECONDS - 5
+    try:
+        while process.is_alive() and not stop.is_set() and time.monotonic() < deadline:
+            process.join(timeout=0.25)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=2)
+            if process.is_alive():
+                process.kill()
+                process.join()
+            retry_or_fail(*claimed, reason="WORKER_STOPPED" if stop.is_set() else "SCAN_TIMEOUT")
+        elif process.exitcode:
+            retry_or_fail(*claimed)
+    finally:
+        process.close()
+
+
+def worker_loop(stop: threading.Event) -> None:
+    while not stop.is_set():
+        try:
+            claimed = claim_scan()
+            if claimed is not None:
+                run_claimed_process(claimed, stop)
+                continue
+        except Exception:
+            logger.exception("Durable scan worker iteration failed")
+        stop.wait(2)
+
+
+def start_worker():
+    stop = threading.Event()
+    thread = threading.Thread(target=worker_loop, args=(stop,), name="polaris-scans", daemon=True)
+    thread.start()
+    return stop, thread
+
+
+def stop_worker(handle) -> None:
+    stop, thread = handle
+    stop.set()
+    thread.join(timeout=5)
 
 
 def _finding_key(file: str, rule: str, line: int | None) -> tuple[str, str, int | None]:
@@ -192,6 +228,7 @@ def _verdict_for_risk(risk: str) -> FinalVerdict:
 
 
 def _execute(job: dict, scan_run: ScanRun, db) -> None:
+    _check_lease(scan_run)
     repo = job["repo_full_name"]
     pr_number = job["pr_number"]
     head_sha = job["head_sha"]
@@ -210,6 +247,7 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
     ai_context: dict[str, str] = {}
     skipped_for_coverage = 0
     for meta in infra_meta:
+        _check_lease(scan_run)
         filename = meta["filename"]
         content = get_file_content(repo, filename, head_sha, token)
         if content is None or classify(filename, content) == FileType.unknown:
@@ -228,15 +266,13 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
         ai_context[filename] = changed_line_context(content, lines)
 
     if not file_contents:
-        scan_run.status = ScanStatus.completed
-        scan_run.verdict = FinalVerdict.warning if skipped_for_coverage else FinalVerdict.pass_
-        scan_run.summary = (
+        summary = (
             "Deterministic scan completed with partial coverage; GitHub omitted all reviewable patches."
             if skipped_for_coverage
             else "No infrastructure changes remained after content filtering."
         )
-        db.commit()
-        post_commit_status(repo, head_sha, token, "medium" if skipped_for_coverage else "pass", scan_run.summary)
+        _commit_result(scan_run, db, FinalVerdict.warning if skipped_for_coverage else FinalVerdict.pass_, summary)
+        post_commit_status(repo, head_sha, token, "medium" if skipped_for_coverage else "pass", summary)
         return
 
     deterministic = run_deterministic(file_contents).findings
@@ -268,6 +304,7 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
     budget = AIBudget(get_settings().gemini_total_budget_seconds)
 
     try:
+        _check_lease(scan_run)
         reasoning, model_used = run_reasoning_agent(ai_context, deterministic, budget)
         for candidate in _dedupe_findings(reasoning.findings):
             key = _finding_key(candidate.file, candidate.rule, candidate.line)
@@ -301,6 +338,7 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
                 review_groups[candidate.file].append(candidate)
 
         for filename, candidates in review_groups.items():
+            _check_lease(scan_run)
             try:
                 verification, _ = run_verification_agent(ai_context[filename], candidates, budget)
             except AIProviderError as exc:
@@ -403,10 +441,7 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
             },
         ))
 
-    scan_run.status = ScanStatus.completed
-    scan_run.verdict = _verdict_for_risk(risk)
-    scan_run.summary = summary
-    db.commit()
+    _commit_result(scan_run, db, _verdict_for_risk(risk), summary)
 
     output = ReasoningOutput(overall_risk=risk, summary=summary, findings=accepted)
     combined = VerificationOutput(
@@ -424,8 +459,5 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
 
 
 def _finish_without_files(scan_run, db, repo: str, head_sha: str, token: str) -> None:
-    scan_run.status = ScanStatus.completed
-    scan_run.verdict = FinalVerdict.pass_
-    scan_run.summary = "No infrastructure files changed."
-    db.commit()
+    _commit_result(scan_run, db, FinalVerdict.pass_, "No infrastructure files changed.")
     post_commit_status(repo, head_sha, token, "pass", scan_run.summary)
