@@ -17,8 +17,8 @@ from app.database import SessionLocal
 from app.scanner.queue import (
     LEASE_SECONDS, LeaseLost, assert_owned, claim_scan, enqueue_scan, fence_result, retry_or_fail,
 )
+from app.outbox import enqueue_commit_status, enqueue_pr_review
 from app.models import FinalVerdict, ScanFinding, ScanRun, ScanStatus
-from app.reporter import post_commit_status, post_pr_review
 from app.scanner.deterministic import run_deterministic
 from app.scanner.diff import changed_line_context, changed_lines_from_patch
 from app.scanner.fetcher import get_file_content, get_installation_token, list_pr_files
@@ -76,14 +76,16 @@ def run_scan(scan_run_id: int, owner: str) -> None:
             "installation_id": scan_run.installation_id,
         }
         try:
-            token = get_installation_token(job["installation_id"])
+            get_installation_token(job["installation_id"])  # fail fast when unauthenticated
             _check_lease(scan_run)
-            post_commit_status(job["repo_full_name"], job["head_sha"], token,
-                               "pending", "Polaris security scan is running.")
+            enqueue_commit_status(db, scan_run.id, job["repo_full_name"], job["pr_number"],
+                                  job["head_sha"], job["installation_id"],
+                                  "pending", "Polaris security scan is running.")
+            db.commit()
         except LeaseLost:
             raise
         except Exception:
-            logger.exception("Failed to post pending status for scan %s", scan_run_id)
+            logger.exception("Failed to stage pending status for scan %s", scan_run_id)
         _execute(job, scan_run, db)
     except LeaseLost:
         db.rollback()
@@ -93,11 +95,16 @@ def run_scan(scan_run_id: int, owner: str) -> None:
         logger.exception("Operational scan failure for scan %s", scan_run_id)
         if retry_or_fail(scan_run_id, owner):
             try:
-                token = get_installation_token(job["installation_id"])
-                post_commit_status(job["repo_full_name"], job["head_sha"], token, "error",
-                                   "Scan failed after 3 attempts (SCANNER_INTERNAL). Retry manually.")
+                error_db = SessionLocal()
+                try:
+                    enqueue_commit_status(error_db, scan_run_id, job["repo_full_name"],
+                                          job["pr_number"], job["head_sha"], job["installation_id"],
+                                          "error", "Scan failed after 3 attempts (SCANNER_INTERNAL). Retry manually.")
+                    error_db.commit()
+                finally:
+                    error_db.close()
             except Exception:
-                logger.exception("Failed to report terminal error for scan %s", scan_run_id)
+                logger.exception("Failed to stage terminal error for scan %s", scan_run_id)
     finally:
         db.close()
 
@@ -256,7 +263,7 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
         if is_scannable(item["filename"]) and item["status"] != "removed"
     ]
     if not infra_meta:
-        _finish_without_files(scan_run, db, repo, head_sha, token)
+        _finish_without_files(scan_run, db, repo, head_sha)
         return
 
     file_contents: dict[str, str] = {}
@@ -288,8 +295,10 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
             if skipped_for_coverage
             else "No infrastructure changes remained after content filtering."
         )
+        risk = "medium" if skipped_for_coverage else "pass"
+        enqueue_commit_status(db, scan_run.id, repo, pr_number, head_sha,
+                              scan_run.installation_id, risk, summary)
         _commit_result(scan_run, db, FinalVerdict.warning if skipped_for_coverage else FinalVerdict.pass_, summary)
-        post_commit_status(repo, head_sha, token, "medium" if skipped_for_coverage else "pass", summary)
         return
 
     deterministic = run_deterministic(file_contents).findings
@@ -458,23 +467,21 @@ def _execute(job: dict, scan_run: ScanRun, db) -> None:
             },
         ))
 
-    _commit_result(scan_run, db, _verdict_for_risk(risk), summary)
-
+    verdict = _verdict_for_risk(risk)
     output = ReasoningOutput(overall_risk=risk, summary=summary, findings=accepted)
     combined = VerificationOutput(
         verdicts=all_verdicts,
         all_clear=all(item.final_recommendation == "approve" for item in all_verdicts),
     )
-    try:
-        post_pr_review(repo, pr_number, head_sha, token, output, combined)
-    except Exception:
-        logger.exception("Failed to post review for %s PR#%s", repo, pr_number)
-    try:
-        post_commit_status(repo, head_sha, token, risk, summary)
-    except Exception:
-        logger.exception("Failed to post final status for %s PR#%s", repo, pr_number)
+    enqueue_commit_status(db, scan_run.id, repo, pr_number, head_sha,
+                          scan_run.installation_id, risk, summary)
+    enqueue_pr_review(db, scan_run.id, repo, pr_number, head_sha,
+                      scan_run.installation_id, output, combined)
+    _commit_result(scan_run, db, verdict, summary)
 
 
-def _finish_without_files(scan_run, db, repo: str, head_sha: str, token: str) -> None:
-    _commit_result(scan_run, db, FinalVerdict.pass_, "No infrastructure files changed.")
-    post_commit_status(repo, head_sha, token, "pass", scan_run.summary)
+def _finish_without_files(scan_run, db, repo: str, head_sha: str) -> None:
+    summary = "No infrastructure files changed."
+    enqueue_commit_status(db, scan_run.id, repo, scan_run.pr_number, head_sha,
+                          scan_run.installation_id, "pass", summary)
+    _commit_result(scan_run, db, FinalVerdict.pass_, summary)

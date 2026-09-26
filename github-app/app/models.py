@@ -69,3 +69,35 @@ class ScanFinding(Base):
     agent_data = Column(JSON, nullable=True)          # full agent output blob
 
     scan_run = relationship("ScanRun", back_populates="findings")
+
+
+class OutboxStatus(str, enum.Enum):
+    pending = "pending"
+    delivered = "delivered"
+    failed = "failed"
+
+
+class ReportingOutbox(Base):
+    """Durable GitHub publication awaiting dispatch (commit status / PR review)."""
+    __tablename__ = "reporting_outbox"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_run_id = Column(Integer, ForeignKey("scan_runs.id"), nullable=False)
+    event_type = Column(String, nullable=False)          # "commit_status" | "pr_review"
+    repo_full_name = Column(String, nullable=False)
+    pr_number = Column(Integer, nullable=False)
+    head_sha = Column(String, nullable=False)
+    installation_id = Column(Integer, nullable=False)
+    payload = Column(JSON, nullable=False)
+    status = Column(SAEnum(OutboxStatus), default=OutboxStatus.pending, nullable=False)
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    locked_until = Column(DateTime, nullable=True)
+    worker_id = Column(String, nullable=True)
+    available_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )

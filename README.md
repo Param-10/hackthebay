@@ -107,10 +107,11 @@ To try it on your own repo, install the [Polaris GitHub App](https://github.com/
 
 ## Running Locally (Development)
 
-Scan jobs are now persisted and claimed by a supervised worker. Existing databases
-require `python -m app.migrate` before starting this version. See
-[durable queue operations and recovery](docs/SCAN-QUEUE.md) for migration, retries,
-storage requirements, and the remaining GitHub reporting limitations.
+Scan jobs are now persisted and claimed by a supervised worker, and GitHub
+feedback is delivered through a durable reporting outbox that retries failed
+publications. Existing databases require `python -m app.migrate` before starting
+this version. See [durable queue operations and recovery](docs/SCAN-QUEUE.md)
+for migration, retries, storage requirements, and remaining delivery limits.
 
 For contributing or local testing — production users should just use the live deployment above.
 

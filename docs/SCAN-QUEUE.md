@@ -75,12 +75,15 @@ ownership, bounded retries, history-preserving manual retries, and legacy migrat
 **Limits**
 
 Execution is retried, so interrupted attempts may repeat read-only GitHub calls
-or AI enrichment. GitHub review/status publication remains best-effort under the
-existing reporter: a crash after saving findings but before publishing can leave
-GitHub feedback missing, and an ambiguous HTTP response cannot establish exactly-once
-delivery. Results and terminal failures remain visible in the database/dashboard;
-timeout exhaustion can leave the earlier GitHub status pending. A durable reporting
-outbox is separate follow-up work. This change does not claim to solve that boundary.
+or AI enrichment. Results and terminal failures remain visible in the
+database/dashboard. GitHub review and commit-status publications are now staged
+in a durable reporting outbox (`reporting_outbox`) in the same transaction as
+the scan result and dispatched by a retrying worker, so a crash after saving
+findings no longer loses GitHub feedback. Delivery is at-least-once: an
+ambiguous HTTP response may re-send, and the reporter's idempotence guards
+(status overwrites, duplicate-review detection) absorb the repeats. Events that
+exhaust their bounded retries are marked `failed` with the last error and remain
+visible for manual replay or the next scan run's status overwrite.
 
 The fixed lease assumes reasonably synchronized clocks across hosts. A killed
 supervisor can leave a child alive temporarily; lease fencing protects subsequent
