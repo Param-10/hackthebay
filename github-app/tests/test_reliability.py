@@ -557,7 +557,8 @@ jobs:
         from fastapi.testclient import TestClient
         import app.main as main
 
-        with patch.object(main, "API_SECRET", "expected-secret"):
+        with patch.object(main, "API_SECRET", "expected-secret"), \
+                patch.object(main, "start_worker"), patch.object(main, "stop_worker"):
             with TestClient(main.app) as client:
                 response = client.post("/scans/1/retry")
         self.assertEqual(response.status_code, 403)
