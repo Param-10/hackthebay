@@ -14,6 +14,7 @@ from app.models import ScanStatus
 from app.webhook import parse_pr_event
 from app.scanner.queue import enqueue_scan
 from app.scanner.worker import start_worker, stop_worker
+from app.outbox import start_reporting_worker, stop_reporting_worker
 from app.scanner.fetcher import get_installation_token, _auth_headers, GITHUB_API
 from app.scanner.patches import verify_finding_patch
 
@@ -74,10 +75,12 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Database initialised")
     handle = start_worker()
+    reporting = start_reporting_worker()
     try:
         yield
     finally:
         stop_worker(handle)
+        stop_reporting_worker(reporting)
 
 
 app = FastAPI(title="IaC Security Scanner", lifespan=lifespan, docs_url=None, redoc_url=None)

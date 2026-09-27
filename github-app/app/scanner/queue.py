@@ -31,8 +31,14 @@ def enqueue_scan(job: dict, *, retry: bool = False) -> tuple[int, bool]:
     with SessionLocal() as db:
         existing = db.query(ScanRun).filter(ScanRun.dedupe_key == key).first()
         if existing:
-            if not retry or existing.status in (ScanStatus.pending, ScanStatus.running):
+            if existing.status in (ScanStatus.pending, ScanStatus.running):
                 return existing.id, False
+            if not retry:
+                # A concurrent manual retry may be taking over the key right now;
+                # resolve to whichever run owns it at return time so webhook
+                # responses never point at a stale terminal history row.
+                current = db.query(ScanRun).filter(ScanRun.dedupe_key == key).first()
+                return (current.id if current is not None else existing.id), False
             # Release only a terminal run's identity, preserving its findings/history.
             changed = db.query(ScanRun).filter(
                 ScanRun.id == existing.id,

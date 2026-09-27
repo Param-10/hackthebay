@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from app.agents.client import AIBudget, AIProviderError, _classify_error, generate_structured
 from app.agents.reasoning import ReasonedFinding, ReasoningOutput, _SYSTEM as REASONING_SYSTEM, _build_user_message
 from app.agents.safety import redact_sensitive_text
-from app.models import FinalVerdict, ScanStatus
+from app.models import FinalVerdict, ScanFinding, ScanStatus
 from app.scanner.diff import changed_line_context, changed_lines_from_patch
 from app.scanner.deterministic import run_deterministic
 from app.scanner.patches import apply_unified_diff, deterministic_patch_for, verify_finding_patch
@@ -413,8 +413,6 @@ jobs:
             for item in scan_actions(".github/workflows/release.yml", echoed)
         ))
 
-    @patch("app.scanner.worker.post_commit_status")
-    @patch("app.scanner.worker.post_pr_review")
     @patch("app.scanner.worker.run_verification_agent")
     @patch("app.scanner.worker.run_reasoning_agent")
     @patch("app.scanner.worker.get_file_content")
@@ -427,8 +425,6 @@ jobs:
         get_content,
         reasoning,
         verification,
-        _post_review,
-        _post_status,
     ):
         filename = ".github/workflows/release.yml"
         content = """name: Release
@@ -489,7 +485,7 @@ jobs:
             ReasoningOutput(overall_risk="high", summary="Two high findings", findings=candidates),
             "gemini-test",
         )
-        scan_run = SimpleNamespace(id=9, status=ScanStatus.running, verdict=None, summary=None)
+        scan_run = SimpleNamespace(id=9, status=ScanStatus.running, verdict=None, summary=None, installation_id=1)
         db = MagicMock()
 
         _execute({
@@ -502,7 +498,11 @@ jobs:
         self.assertEqual(scan_run.verdict, FinalVerdict.pass_)
         self.assertIn("0 accepted finding(s)", scan_run.summary)
         verification.assert_not_called()
-        db.add.assert_not_called()
+        stored = [call.args[0] for call in db.add.call_args_list]
+        self.assertFalse(
+            [item for item in stored if isinstance(item, ScanFinding)],
+            "no findings may be persisted for rejected AI-only candidates",
+        )
 
     def test_terraform_patch_is_suggestion_only_without_parser(self):
         patch_text = """--- a/main.tf
@@ -558,13 +558,12 @@ jobs:
         import app.main as main
 
         with patch.object(main, "API_SECRET", "expected-secret"), \
-                patch.object(main, "start_worker"), patch.object(main, "stop_worker"):
+                patch.object(main, "start_worker"), patch.object(main, "stop_worker"), \
+                patch.object(main, "start_reporting_worker"), patch.object(main, "stop_reporting_worker"):
             with TestClient(main.app) as client:
                 response = client.post("/scans/1/retry")
         self.assertEqual(response.status_code, 403)
 
-    @patch("app.scanner.worker.post_commit_status")
-    @patch("app.scanner.worker.post_pr_review")
     @patch("app.scanner.worker.run_reasoning_agent")
     @patch("app.scanner.worker.get_file_content")
     @patch("app.scanner.worker.list_pr_files")
@@ -575,8 +574,6 @@ jobs:
         list_files,
         get_content,
         reasoning,
-        post_review,
-        post_status,
     ):
         get_token.return_value = "token"
         list_files.return_value = [{
@@ -586,7 +583,7 @@ jobs:
         }]
         get_content.return_value = "on: [pull_request]\njobs: {}\n"
         reasoning.side_effect = AIProviderError("AI_TIMEOUT", model="primary", retryable=True)
-        scan_run = SimpleNamespace(id=7, status=ScanStatus.running, verdict=None, summary=None)
+        scan_run = SimpleNamespace(id=7, status=ScanStatus.running, verdict=None, summary=None, installation_id=1)
         db = MagicMock()
         job = {
             "repo_full_name": "Param-10/pr-nutrition",
@@ -600,11 +597,13 @@ jobs:
         self.assertEqual(scan_run.status, ScanStatus.completed)
         self.assertEqual(scan_run.verdict, FinalVerdict.pass_)
         self.assertIn("AI enrichment unavailable (AI_TIMEOUT)", scan_run.summary)
-        post_review.assert_called_once()
-        post_status.assert_called_once()
+        staged = {
+            item.event_type
+            for call in db.add.call_args_list
+            for item in call.args if hasattr(item, "event_type")
+        }
+        self.assertEqual(staged, {"commit_status", "pr_review"})
 
-    @patch("app.scanner.worker.post_commit_status")
-    @patch("app.scanner.worker.post_pr_review")
     @patch("app.scanner.worker.run_reasoning_agent")
     @patch("app.scanner.worker.get_file_content")
     @patch("app.scanner.worker.list_pr_files")
@@ -615,8 +614,6 @@ jobs:
         list_files,
         get_content,
         reasoning,
-        _post_review,
-        _post_status,
     ):
         filename = "deployment.yaml"
         content = (Path(__file__).parent / "fixtures/vulnerable/deployment.yaml").read_text()
@@ -624,7 +621,7 @@ jobs:
         list_files.return_value = [{"filename": filename, "status": "added", "patch": None}]
         get_content.return_value = content
         reasoning.side_effect = AIProviderError("AI_TIMEOUT", model="primary", retryable=True)
-        scan_run = SimpleNamespace(id=8, status=ScanStatus.running, verdict=None, summary=None)
+        scan_run = SimpleNamespace(id=8, status=ScanStatus.running, verdict=None, summary=None, installation_id=1)
         db = MagicMock()
 
         _execute({
@@ -635,7 +632,8 @@ jobs:
         }, scan_run, db)
 
         stored = [call.args[0] for call in db.add.call_args_list]
-        privileged = next(item for item in stored if item.rule.startswith("K8S003"))
+        findings_saved = [item for item in stored if isinstance(item, ScanFinding)]
+        privileged = next(item for item in findings_saved if item.rule.startswith("K8S003"))
         self.assertEqual(privileged.patch_verified, "approve")
         self.assertTrue(privileged.agent_data["fix_eligible"])
         self.assertIn("Targeted finding removed", privileged.agent_data["validation_notes"])

@@ -66,6 +66,32 @@ def claim_in_process(url, ready, hold=False):
     engine.dispose()
 
 
+class _RacyLookup:
+    """Session stand-in that lets a racing retry hand over the dedupe key
+    between the webhook's stale read and its key re-resolution. Each read
+    starts fresh so SQLite/PG snapshots cannot hide the handover."""
+
+    def __init__(self, real, trigger):
+        self._real = real
+        self._trigger = trigger
+        self._lookups = 0
+
+    def __enter__(self):
+        self._real.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._real.__exit__(*exc)
+
+    def query(self, model):
+        if model is ScanRun:
+            self._lookups += 1
+            self._real.rollback()
+            if self._lookups == 2:
+                self._trigger()
+        return self._real.query(model)
+
+
 class QueueTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -126,6 +152,39 @@ class QueueTests(unittest.TestCase):
         scan_id, _ = queue.enqueue_scan(JOB)
         queue.claim_scan()
         self.assertEqual(queue.enqueue_scan(JOB, retry=True), (scan_id, False))
+
+    def test_webhook_resolves_to_newer_run_when_retry_takes_over_key(self):
+        key = queue.scan_key(JOB["repo_full_name"], JOB["pr_number"], JOB["head_sha"])
+        old_id, _ = queue.enqueue_scan(JOB)
+        with self.sessions() as db:
+            db.get(ScanRun, old_id).status = ScanStatus.completed
+            db.commit()
+
+        def retry_handover():
+            # What a manual retry does between the webhook's stale read and its
+            # re-resolution: release the terminal run's key, create the new run.
+            with self.sessions() as db:
+                db.query(ScanRun).filter(ScanRun.id == old_id).update(
+                    {ScanRun.dedupe_key: None}, synchronize_session=False)
+                db.commit()
+                db.add(ScanRun(
+                    repo_full_name=JOB["repo_full_name"], pr_number=JOB["pr_number"],
+                    head_sha=JOB["head_sha"], installation_id=JOB["installation_id"],
+                    status=ScanStatus.pending, dedupe_key=key,
+                ))
+                db.commit()
+
+        racy = _RacyLookup(self.sessions(), retry_handover)
+        try:
+            with patch.object(queue, "SessionLocal", lambda: racy):
+                scan_id, created = queue.enqueue_scan(JOB)
+        finally:
+            racy._real.close()
+
+        self.assertFalse(created, "webhook with a terminal run is a no-op publish")
+        self.assertNotEqual(scan_id, old_id, "response must not point at the stale row")
+        with self.sessions() as db:
+            self.assertEqual(db.query(ScanRun).filter(ScanRun.dedupe_key == key).one().id, scan_id)
 
     def test_concurrent_claims_have_one_owner(self):
         queue.enqueue_scan(JOB)
@@ -239,7 +298,7 @@ class QueueTests(unittest.TestCase):
         scan_id, _ = queue.enqueue_scan(JOB)
         claimed = queue.claim_scan()
         with patch.object(worker, "get_installation_token", return_value="fake"), \
-             patch.object(worker, "post_commit_status"), patch.object(worker, "_execute") as execute:
+             patch.object(worker, "_execute") as execute:
             execute.side_effect = lambda job, run, db: worker._commit_result(run, db, FinalVerdict.pass_, "done")
             worker.run_scan(*claimed)
         self.assertEqual(execute.call_args.args[0], JOB)
@@ -252,7 +311,7 @@ class QueueTests(unittest.TestCase):
             db.add(ScanFinding(scan_run_id=run.id, file="partial.tf", rule="TF001", severity="high", explanation="fixture", raw_evidence="fixture"))
             raise RuntimeError("injected failure")
         with patch.object(worker, "get_installation_token", return_value="fake"), \
-             patch.object(worker, "post_commit_status"), patch.object(worker, "_execute", side_effect=fail):
+             patch.object(worker, "_execute", side_effect=fail):
             worker.run_scan(*claimed)
         self.assertEqual(self.get(scan_id).status, ScanStatus.pending)
         with self.sessions() as db:
@@ -298,7 +357,9 @@ class QueueTests(unittest.TestCase):
         from fastapi.testclient import TestClient
         import app.main as main
         with patch.object(main, "init_db"), patch.object(main, "start_worker"), \
-             patch.object(main, "stop_worker"), patch.object(main, "parse_pr_event", new=AsyncMock(return_value=JOB)), \
+             patch.object(main, "stop_worker"), patch.object(main, "start_reporting_worker"), \
+             patch.object(main, "stop_reporting_worker"), \
+             patch.object(main, "parse_pr_event", new=AsyncMock(return_value=JOB)), \
              patch.object(worker, "get_installation_token") as token:
             with TestClient(main.app) as client:
                 first = client.post("/webhook").json()

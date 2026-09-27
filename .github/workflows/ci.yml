@@ -67,6 +67,11 @@ jobs:
           QUEUE_TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/polaris_test
         run: python -m unittest discover -s tests -p test_queue.py -v
 
+      - name: Run PostgreSQL reporting outbox tests
+        env:
+          QUEUE_TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/polaris_test
+        run: python -m unittest discover -s tests -p test_outbox.py -v
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
